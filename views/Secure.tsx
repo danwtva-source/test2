@@ -1,12 +1,11 @@
 
-
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { Application, User, Score, AREAS, Area, Role, BudgetLine, PortalSettings } from '../types';
 import { COMMITTEE_DOCS, SCORING_CRITERIA, ROLE_PERMISSIONS, MARMOT_PRINCIPLES, WFG_GOALS, ORG_TYPES } from '../constants';
 import { api } from '../services/firebase';
 import { Button, Card, Input, Modal, Select, Badge } from '../components/UI';
 
-// Global Chart.js definition since we load it from CDN
+// Global Chart.js definition
 declare const Chart: any;
 
 // --- SHARED PROFILE MODAL ---
@@ -96,1099 +95,1364 @@ const ProfileModal: React.FC<{
     );
 };
 
-// --- APPLICANT DASHBOARD ---
-export const ApplicantDashboard: React.FC<{ user: User }> = ({ user }) => {
-  const [apps, setApps] = useState<Application[]>([]);
-  const [creationMethod, setCreationMethod] = useState<'none' | 'selecting' | 'digital' | 'upload'>('none');
-  const [stage2App, setStage2App] = useState<Application | null>(null);
-  const [isProfileOpen, setIsProfileOpen] = useState(false);
-  const [currentUser, setCurrentUser] = useState(user); // Local user state for profile updates
+// --- USER FORM MODAL (ADMIN) ---
+const UserFormModal: React.FC<{
+    isOpen: boolean;
+    onClose: () => void;
+    user: User | null; // null = create mode
+    onSave: () => void;
+}> = ({ isOpen, onClose, user, onSave }) => {
+    const [formData, setFormData] = useState<Partial<User>>({
+        email: '',
+        username: '',
+        displayName: '',
+        role: 'applicant',
+        area: undefined
+    });
+    const [password, setPassword] = useState('');
+    const [error, setError] = useState('');
 
-  // --- EOI (Stage 1) FORM STATE ---
-  const [formData, setFormData] = useState<Partial<Application>>({
-      area: 'Blaenavon',
-      amountRequested: 0,
-      totalCost: 0,
-      formData: {
-          positiveOutcomes: ['', '', ''],
-          marmotPrinciples: [],
-          wfgGoals: []
-      }
-  });
+    useEffect(() => {
+        if (user) {
+            setFormData({
+                email: user.email,
+                username: user.username || '',
+                displayName: user.displayName,
+                role: user.role,
+                area: user.area
+            });
+            setPassword(''); // Don't show existing password
+        } else {
+            setFormData({
+                email: '',
+                username: '',
+                displayName: '',
+                role: 'applicant',
+                area: undefined
+            });
+            setPassword('');
+        }
+        setError('');
+    }, [user, isOpen]);
 
-  // --- STAGE 2 FORM STATE ---
-  const [stage2Data, setStage2Data] = useState<Partial<Application['formData']> & { summary?: string }>({
-      checklist: [],
-      declarationStatements: [],
-      budgetBreakdown: [{ item: '', note: '', cost: 0 }],
-      marmotExplanations: {},
-      wfgExplanations: {},
-      summary: ''
-  });
-
-  useEffect(() => {
-    api.getApplications().then(res => setApps(res.filter(a => a.userId === user.uid)));
-  }, [user.uid]);
-
-  // Pre-fill stage 2 data when modal opens
-  useEffect(() => {
-      if (stage2App && stage2App.submissionMethod === 'digital') {
-          // Initialize explanations for items ticked in Stage 1
-          const initialMarmot: Record<string, string> = {};
-          stage2App.formData?.marmotPrinciples?.forEach(p => initialMarmot[p] = '');
-          
-          const initialWfg: Record<string, string> = {};
-          stage2App.formData?.wfgGoals?.forEach(g => initialWfg[g] = '');
-
-          setStage2Data(prev => ({
-              ...prev,
-              marmotExplanations: initialMarmot,
-              wfgExplanations: initialWfg,
-              summary: stage2App.summary || ''
-          }));
-      }
-  }, [stage2App]);
-
-  const updateFormData = (field: string, value: any) => {
-      setFormData(prev => ({
-          ...prev,
-          formData: { ...prev.formData, [field]: value }
-      }));
-  };
-
-  const updateStage2Data = (field: string, value: any) => {
-      setStage2Data(prev => ({ ...prev, [field]: value }));
-  };
-  
-  const updateStage2Explanation = (type: 'marmotExplanations' | 'wfgExplanations', key: string, val: string) => {
-      setStage2Data(prev => ({
-          ...prev,
-          [type]: { ...prev[type], [key]: val }
-      }));
-  };
-
-  const handleEOISubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!ROLE_PERMISSIONS.applicant.canSubmit) {
-        alert("Submissions are currently closed.");
-        return;
-    }
-
-    const isDigital = creationMethod === 'digital';
-    const newApp: any = {
-        userId: user.uid,
-        applicantName: isDigital ? (formData.applicantName || user.displayName) : user.displayName, 
-        orgName: formData.orgName || 'Unknown',
-        projectTitle: formData.projectTitle || 'Untitled',
-        area: formData.area || 'Blaenavon',
-        summary: formData.summary || '',
-        amountRequested: Number(formData.amountRequested),
-        totalCost: Number(formData.totalCost),
-        submissionMethod: creationMethod,
-        formData: isDigital ? formData.formData : {},
-        pdfUrl: !isDigital ? 'https://example.com/uploaded-eoi.pdf' : undefined
+    const handleSubmit = async (e: React.FormEvent) => {
+        e.preventDefault();
+        setError('');
+        try {
+            if (user) {
+                await api.updateUser({ ...user, ...formData } as User);
+            } else {
+                if (!password) throw new Error("Password is required for new users");
+                await api.adminCreateUser(formData as User, password);
+            }
+            onSave();
+            onClose();
+        } catch (err: any) {
+            setError(err.message);
+        }
     };
 
-    await api.createApplication(newApp);
-    setCreationMethod('none');
-    setFormData({ area: 'Blaenavon', amountRequested: 0, totalCost: 0, formData: { positiveOutcomes: ['', '', ''], marmotPrinciples: [], wfgGoals: [] } }); 
-    const res = await api.getApplications();
-    setApps(res.filter(a => a.userId === user.uid));
-  };
-
-  const handleStage2Submit = async (e: React.FormEvent) => {
-      e.preventDefault();
-      if (!stage2App) return;
-      
-      const isDigital = stage2App.submissionMethod === 'digital';
-      const updates: Partial<Application> = { status: 'Submitted-Stage2' };
-
-      if (isDigital) {
-          const { summary, ...rest } = stage2Data;
-          updates.formData = { ...stage2App.formData, ...rest };
-          if (summary) updates.summary = summary;
-      } else {
-          updates.stage2PdfUrl = 'https://example.com/uploaded-full-app.pdf';
-      }
-      
-      await api.updateApplication(stage2App.id, updates);
-      setStage2App(null);
-      const res = await api.getApplications();
-      setApps(res.filter(a => a.userId === user.uid));
-      alert("Full Application (Stage 2) Submitted successfully!");
-  }
-
-  const addBudgetRow = () => {
-      const current = stage2Data.budgetBreakdown || [];
-      updateStage2Data('budgetBreakdown', [...current, { item: '', note: '', cost: 0 }]);
-  };
-
-  const updateBudgetRow = (index: number, field: keyof BudgetLine, value: any) => {
-      const rows = [...(stage2Data.budgetBreakdown || [])];
-      rows[index] = { ...rows[index], [field]: value };
-      updateStage2Data('budgetBreakdown', rows);
-  };
-
-  // --- RENDER: DASHBOARD LIST ---
-  if ((creationMethod === 'none' || creationMethod === 'selecting') && !stage2App) {
-      return (
-        <div className="max-w-5xl mx-auto py-12 px-4">
-            <div className="flex flex-col md:flex-row justify-between items-center mb-10 gap-4">
-                <div>
-                    <h2 className="text-3xl font-bold font-dynapuff text-gray-800">My Applications</h2>
-                    <p className="text-gray-500">Manage your funding requests and track progress.</p>
+    return (
+        <Modal isOpen={isOpen} onClose={onClose} title={user ? 'Edit User' : 'Create New User'}>
+            <form onSubmit={handleSubmit} className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                    <Input label="Display Name" value={formData.displayName} onChange={e => setFormData({...formData, displayName: e.target.value})} required />
+                    <Input label="Username (Optional)" value={formData.username} onChange={e => setFormData({...formData, username: e.target.value})} />
                 </div>
-                <div className="flex gap-3">
-                    <Button variant="outline" onClick={() => setIsProfileOpen(true)}>Edit Profile</Button>
-                    {ROLE_PERMISSIONS.applicant.canSubmit && (
-                        <Button onClick={() => setCreationMethod('selecting')} className="shadow-xl">+ Start New Application</Button>
+                
+                <Input label="Email Address" type="email" value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} required disabled={!!user} />
+                
+                {!user && (
+                    <Input label="Password" type="password" value={password} onChange={e => setPassword(e.target.value)} required />
+                )}
+
+                <div className="grid grid-cols-2 gap-4">
+                    <div>
+                        <label className="block text-sm font-bold text-gray-700 mb-2 font-dynapuff">Role</label>
+                        <select 
+                            className="w-full px-4 py-3 rounded-xl border border-gray-200" 
+                            value={formData.role} 
+                            onChange={e => setFormData({...formData, role: e.target.value as Role})}
+                        >
+                            <option value="applicant">Applicant</option>
+                            <option value="committee">Committee Member</option>
+                            <option value="admin">Administrator</option>
+                        </select>
+                    </div>
+                    {formData.role === 'committee' && (
+                        <div>
+                            <label className="block text-sm font-bold text-gray-700 mb-2 font-dynapuff">Area</label>
+                            <select 
+                                className="w-full px-4 py-3 rounded-xl border border-gray-200" 
+                                value={formData.area || ''} 
+                                onChange={e => setFormData({...formData, area: e.target.value as Area})}
+                                required
+                            >
+                                <option value="">Select Area...</option>
+                                {AREAS.map(a => <option key={a} value={a}>{a}</option>)}
+                            </select>
+                        </div>
                     )}
+                </div>
+
+                {error && <div className="text-red-600 text-sm bg-red-50 p-2 rounded">{error}</div>}
+                
+                <Button type="submit" className="w-full">{user ? 'Update User' : 'Create User'}</Button>
+            </form>
+        </Modal>
+    );
+};
+
+// --- REUSABLE APPLICATION FORM COMPONENTS ---
+
+// Stage 1 (EOI) Component
+export const DigitalStage1Form: React.FC<{
+    data: Partial<Application>;
+    onChange: (newData: Partial<Application>) => void;
+    onSubmit: (e: React.FormEvent) => void;
+    onCancel: () => void;
+    readOnly?: boolean;
+}> = ({ data, onChange, onSubmit, onCancel, readOnly = false }) => {
+    
+    const updateFormData = (field: string, value: any) => {
+        onChange({
+            ...data,
+            formData: { ...data.formData, [field]: value }
+        });
+    };
+
+    const handleOutcomeChange = (index: number, value: string) => {
+        const outcomes = data.formData?.positiveOutcomes ? [...data.formData.positiveOutcomes] : ['', '', ''];
+        outcomes[index] = value;
+        updateFormData('positiveOutcomes', outcomes);
+    };
+
+    return (
+        <div className="bg-white rounded-3xl shadow-xl border border-purple-100 overflow-hidden max-w-5xl mx-auto">
+            <div className="bg-brand-purple p-6 text-white flex justify-between items-center">
+                <div>
+                    <h2 className="text-2xl font-bold font-dynapuff">Expression of Interest</h2>
+                    <p className="opacity-90">Stage 1 Application Form (Digital)</p>
+                </div>
+                {readOnly && <span className="bg-white/20 px-3 py-1 rounded-full text-sm font-bold">Preview Mode</span>}
+            </div>
+            <form onSubmit={onSubmit} className="p-8 space-y-10">
+                
+                {/* 1. Area */}
+                <section>
+                    <h3 className="text-xl font-bold text-gray-800 font-dynapuff border-b pb-2 mb-4">1. Communities' Choice Area</h3>
+                    <div className="grid md:grid-cols-3 gap-4 mb-4">
+                        {AREAS.map(area => (
+                            <label key={area} className={`flex items-center gap-3 p-4 rounded-xl border cursor-pointer transition-all ${data.area === area ? 'bg-purple-50 border-brand-purple' : 'bg-white border-gray-200'}`}>
+                                <input type="radio" name="area" value={area} checked={data.area === area} onChange={() => onChange({...data, area: area})} className="w-5 h-5 accent-brand-purple" disabled={readOnly} />
+                                <span className="font-bold text-sm">{area}</span>
+                            </label>
+                        ))}
+                    </div>
+                    <label className="flex items-center gap-2 mt-4 cursor-pointer">
+                        <input type="checkbox" checked={data.formData?.applyMultiArea || false} onChange={e => updateFormData('applyMultiArea', e.target.checked)} disabled={readOnly} className="w-5 h-5 accent-brand-purple" />
+                        <span className="text-gray-700">Do you intend to apply for funding in more than one area?</span>
+                    </label>
+                </section>
+
+                {/* 2. Applicant Info */}
+                <section>
+                    <h3 className="text-xl font-bold text-gray-800 font-dynapuff border-b pb-2 mb-4">2. Applicant Information</h3>
+                    <div className="grid md:grid-cols-2 gap-6 mb-4">
+                        <Input label="Organisation Name" value={data.orgName} onChange={e => onChange({...data, orgName: e.target.value})} disabled={readOnly} />
+                        <Input label="Position / Job Title" value={data.formData?.contactPosition || ''} onChange={e => updateFormData('contactPosition', e.target.value)} disabled={readOnly} />
+                        <Input label="Contact Name" value={data.applicantName} onChange={e => onChange({...data, applicantName: e.target.value})} disabled={readOnly} />
+                        <Input label="Email" type="email" value={data.formData?.contactEmail || ''} onChange={e => updateFormData('contactEmail', e.target.value)} disabled={readOnly} />
+                        <Input label="Phone Number" value={data.formData?.contactPhone || ''} onChange={e => updateFormData('contactPhone', e.target.value)} disabled={readOnly} />
+                    </div>
+                    
+                    <div className="bg-gray-50 p-4 rounded-xl border border-gray-100">
+                        <h4 className="font-bold text-gray-700 mb-3">Registered Address</h4>
+                        <div className="grid md:grid-cols-2 gap-4">
+                            <Input label="No. / Street" value={data.formData?.addressStreet || ''} onChange={e => updateFormData('addressStreet', e.target.value)} disabled={readOnly} />
+                            <Input label="Local Area" value={data.formData?.addressLocalArea || ''} onChange={e => updateFormData('addressLocalArea', e.target.value)} disabled={readOnly} />
+                            <Input label="Town / City" value={data.formData?.addressTown || ''} onChange={e => updateFormData('addressTown', e.target.value)} disabled={readOnly} />
+                            <div className="grid grid-cols-2 gap-4">
+                                <Input label="County" value={data.formData?.addressCounty || ''} onChange={e => updateFormData('addressCounty', e.target.value)} disabled={readOnly} />
+                                <Input label="Postcode" value={data.formData?.addressPostcode || ''} onChange={e => updateFormData('addressPostcode', e.target.value)} disabled={readOnly} />
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                {/* 3. Organisation Type */}
+                <section>
+                    <h3 className="text-xl font-bold text-gray-800 font-dynapuff border-b pb-2 mb-4">3. Organisation Type</h3>
+                    <div className="grid md:grid-cols-2 gap-3">
+                        {ORG_TYPES.map(type => (
+                            <label key={type} className="flex items-center gap-2 text-sm text-gray-700">
+                                <input 
+                                    type="radio" 
+                                    name="orgType" 
+                                    value={type} 
+                                    checked={data.formData?.orgType === type} 
+                                    onChange={e => updateFormData('orgType', e.target.value)} 
+                                    disabled={readOnly}
+                                    className="accent-brand-purple"
+                                />
+                                {type}
+                            </label>
+                        ))}
+                    </div>
+                    {data.formData?.orgType === 'Other' && (
+                        <Input 
+                            placeholder="Please describe..." 
+                            className="mt-2"
+                            value={data.formData?.orgTypeOther || ''} 
+                            onChange={e => updateFormData('orgTypeOther', e.target.value)} 
+                            disabled={readOnly}
+                        />
+                    )}
+                </section>
+
+                {/* 4. Priorities */}
+                <section>
+                    <h3 className="text-xl font-bold text-gray-800 font-dynapuff border-b pb-2 mb-4">4. Priorities</h3>
+                    <div className="mb-6">
+                        <Input label="4.1 Pick Your Main Project Theme" value={data.formData?.projectTheme || ''} onChange={e => updateFormData('projectTheme', e.target.value)} disabled={readOnly} placeholder="e.g. Health & Wellbeing, Youth Services..." />
+                    </div>
+                    <div>
+                        <h4 className="font-bold text-gray-700 mb-2">4.2 Project Timeline</h4>
+                        <div className="grid md:grid-cols-3 gap-4">
+                            <Input label="Start Date" type="date" value={data.formData?.startDate || ''} onChange={e => updateFormData('startDate', e.target.value)} disabled={readOnly} />
+                            <Input label="End Date" type="date" value={data.formData?.endDate || ''} onChange={e => updateFormData('endDate', e.target.value)} disabled={readOnly} />
+                            <Input label="Duration" placeholder="e.g. 6 months" value={data.formData?.duration || ''} onChange={e => updateFormData('duration', e.target.value)} disabled={readOnly} />
+                        </div>
+                    </div>
+                </section>
+
+                {/* 5. Project Details */}
+                <section>
+                    <h3 className="text-xl font-bold text-gray-800 font-dynapuff border-b pb-2 mb-4">5. Project Details</h3>
+                    <Input label="5.1 Project Title" value={data.projectTitle} onChange={e => onChange({...data, projectTitle: e.target.value})} disabled={readOnly} />
+                    <div className="mb-6">
+                        <label className="block text-sm font-bold text-gray-700 mb-2 font-dynapuff">5.2 Project Summary (Max 250 words)</label>
+                        <textarea className="w-full px-4 py-3 rounded-xl border border-gray-200 h-32" value={data.summary} onChange={e => onChange({...data, summary: e.target.value})} disabled={readOnly} />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-bold text-gray-700 mb-2 font-dynapuff">5.3 Positive Outcomes</label>
+                        <div className="space-y-3">
+                            {[0, 1, 2].map(i => (
+                                <div key={i} className="flex gap-2 items-center">
+                                    <span className="font-bold text-gray-400">{i+1}:</span>
+                                    <input 
+                                        className="w-full px-4 py-2 rounded-xl border border-gray-200 focus:border-brand-purple outline-none" 
+                                        value={data.formData?.positiveOutcomes?.[i] || ''} 
+                                        onChange={e => handleOutcomeChange(i, e.target.value)}
+                                        disabled={readOnly}
+                                    />
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </section>
+
+                {/* 6. Budget */}
+                <section>
+                    <h3 className="text-xl font-bold text-gray-800 font-dynapuff border-b pb-2 mb-4">6. Budget</h3>
+                    <div className="grid md:grid-cols-2 gap-6 mb-6">
+                        <Input label="a) Total Project Cost (£)" type="number" value={data.totalCost} onChange={e => onChange({...data, totalCost: Number(e.target.value)})} disabled={readOnly} />
+                        <Input label="Amount Applied For (£)" type="number" value={data.amountRequested} onChange={e => onChange({...data, amountRequested: Number(e.target.value)})} disabled={readOnly} />
+                    </div>
+                    <div className="mb-4">
+                        <label className="block text-sm font-bold text-gray-700 mb-2 font-dynapuff">b) Other Funding Sources</label>
+                        <textarea 
+                            className="w-full px-4 py-3 rounded-xl border border-gray-200 h-20" 
+                            placeholder="List grants, donations, in-kind contributions..."
+                            value={data.formData?.otherFundingSources || ''}
+                            onChange={e => updateFormData('otherFundingSources', e.target.value)}
+                            disabled={readOnly}
+                        />
+                    </div>
+                    <div className="mb-4">
+                        <label className="block text-sm font-bold text-gray-700 mb-2 font-dynapuff">c) Break Down for Cross-Area Applications</label>
+                        <textarea 
+                            className="w-full px-4 py-3 rounded-xl border border-gray-200 h-20" 
+                            placeholder="Details about project logistics and costs for each area..."
+                            value={data.formData?.crossAreaBreakdown || ''}
+                            onChange={e => updateFormData('crossAreaBreakdown', e.target.value)}
+                            disabled={readOnly}
+                        />
+                    </div>
+                </section>
+
+                {/* 7. Alignment */}
+                <section>
+                    <h3 className="text-xl font-bold text-gray-800 font-dynapuff border-b pb-2 mb-4">7. Alignment with Priorities</h3>
+                    
+                    <div className="mb-6">
+                        <h4 className="font-bold text-gray-700 mb-2">a) Alignment with the Marmot Principles</h4>
+                        <div className="grid md:grid-cols-2 gap-2">
+                            {MARMOT_PRINCIPLES.map(p => (
+                                <label key={p} className="flex items-start gap-2 text-sm text-gray-600">
+                                    <input type="checkbox" className="mt-1" checked={data.formData?.marmotPrinciples?.includes(p)} onChange={(e) => {
+                                        if (readOnly) return;
+                                        const current = data.formData?.marmotPrinciples || [];
+                                        const updated = e.target.checked ? [...current, p] : current.filter(x => x !== p);
+                                        updateFormData('marmotPrinciples', updated);
+                                    }} disabled={readOnly} />
+                                    {p}
+                                </label>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div className="mb-6">
+                        <h4 className="font-bold text-gray-700 mb-2">b) Well-being of Future Generations Goals</h4>
+                        <div className="grid md:grid-cols-2 gap-2">
+                            {WFG_GOALS.map(g => (
+                                <label key={g} className="flex items-start gap-2 text-sm text-gray-600">
+                                    <input type="checkbox" className="mt-1" checked={data.formData?.wfgGoals?.includes(g)} onChange={(e) => {
+                                        if (readOnly) return;
+                                        const current = data.formData?.wfgGoals || [];
+                                        const updated = e.target.checked ? [...current, g] : current.filter(x => x !== g);
+                                        updateFormData('wfgGoals', updated);
+                                    }} disabled={readOnly} />
+                                    {g}
+                                </label>
+                            ))}
+                        </div>
+                    </div>
+                </section>
+
+                {/* 8. Declarations */}
+                <section>
+                    <h3 className="text-xl font-bold text-gray-800 font-dynapuff border-b pb-2 mb-4">8. Declarations & Consent</h3>
+                    <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
+                        <label className="flex items-center gap-2 mb-4">
+                            <input type="checkbox" checked={data.formData?.declarationSigned || false} onChange={e => updateFormData('declarationSigned', e.target.checked)} disabled={readOnly} className="w-5 h-5 accent-brand-purple" />
+                            <span className="text-sm font-bold text-gray-700">I confirm that I have read, understood and consent to the GDPR Policy. I declare the information provided is true and correct.</span>
+                        </label>
+                        <div className="grid md:grid-cols-2 gap-6">
+                             <Input label="Name (Signature)" value={data.formData?.declarationName || ''} onChange={e => updateFormData('declarationName', e.target.value)} disabled={readOnly} />
+                             <Input label="Date" type="date" value={data.formData?.declarationDate || ''} onChange={e => updateFormData('declarationDate', e.target.value)} disabled={readOnly} />
+                        </div>
+                    </div>
+                </section>
+
+                <div className="flex gap-4 border-t pt-8">
+                    {!readOnly && (
+                        <>
+                            <Button type="submit" size="lg" className="flex-1 shadow-xl">Submit Stage 1</Button>
+                            <Button type="button" variant="ghost" onClick={onCancel}>Save Draft & Exit</Button>
+                        </>
+                    )}
+                </div>
+            </form>
+        </div>
+    );
+};
+
+// Stage 2 (Full Application) Component
+export const DigitalStage2Form: React.FC<{
+    data: Partial<Application>;
+    onChange: (newData: Partial<Application>) => void;
+    onSubmit: (e: React.FormEvent) => void;
+    onCancel: () => void;
+    readOnly?: boolean;
+}> = ({ data, onChange, onSubmit, onCancel, readOnly = false }) => {
+
+    const updateFormData = (field: string, value: any) => {
+        onChange({
+            ...data,
+            formData: { ...data.formData, [field]: value }
+        });
+    };
+
+    const budgetLines: BudgetLine[] = data.formData?.budgetBreakdown || [];
+
+    const handleBudgetChange = (idx: number, field: keyof BudgetLine, val: string | number) => {
+        if (readOnly) return;
+        const newLines = [...budgetLines];
+        newLines[idx] = { ...newLines[idx], [field]: val };
+        
+        // Recalculate total
+        const total = newLines.reduce((sum, line) => sum + (Number(line.cost) || 0), 0);
+        
+        onChange({
+            ...data,
+            totalCost: total,
+            amountRequested: total, // Usually same in full app unless partial funding
+            formData: { ...data.formData, budgetBreakdown: newLines }
+        });
+    };
+
+    const addBudgetLine = () => {
+        if (readOnly) return;
+        updateFormData('budgetBreakdown', [...budgetLines, { item: '', note: '', cost: 0 }]);
+    };
+
+    const removeBudgetLine = (idx: number) => {
+        if (readOnly) return;
+        const newLines = budgetLines.filter((_, i) => i !== idx);
+        // Recalc total
+        const total = newLines.reduce((sum, line) => sum + (Number(line.cost) || 0), 0);
+        onChange({
+            ...data,
+            totalCost: total,
+            amountRequested: total,
+            formData: { ...data.formData, budgetBreakdown: newLines }
+        });
+    };
+    
+    // Helpers for checklist toggle
+    const toggleChecklist = (item: string) => {
+        const current = data.formData?.checklist || [];
+        const updated = current.includes(item) ? current.filter(i => i !== item) : [...current, item];
+        updateFormData('checklist', updated);
+    };
+
+    const toggleDeclaration = (item: string) => {
+        const current = data.formData?.declarationStatements || [];
+        const updated = current.includes(item) ? current.filter(i => i !== item) : [...current, item];
+        updateFormData('declarationStatements', updated);
+    };
+
+    return (
+        <div className="bg-white rounded-3xl shadow-xl border border-teal-100 overflow-hidden max-w-5xl mx-auto">
+            <div className="bg-brand-darkTeal p-6 text-white flex justify-between items-center">
+                <div>
+                    <h2 className="text-2xl font-bold font-dynapuff">Full Application</h2>
+                    <p className="opacity-90">Stage 2 Submission (Digital)</p>
+                </div>
+                {readOnly && <span className="bg-white/20 px-3 py-1 rounded-full text-sm font-bold">Preview Mode</span>}
+            </div>
+            <form onSubmit={onSubmit} className="p-8 space-y-10">
+                
+                {/* 1. Organisation Details */}
+                <section>
+                    <h3 className="text-xl font-bold text-gray-800 font-dynapuff border-b pb-2 mb-4">1. Applicant & Bank Information</h3>
+                    <div className="grid md:grid-cols-2 gap-6 mb-4">
+                        <Input label="Organisation Name" value={data.orgName} disabled />
+                        <Input label="Charity Number (if applicable)" value={data.formData?.charityNumber || ''} onChange={e => updateFormData('charityNumber', e.target.value)} disabled={readOnly} />
+                        <Input label="Companies House No. (if applicable)" value={data.formData?.companyNumber || ''} onChange={e => updateFormData('companyNumber', e.target.value)} disabled={readOnly} />
+                    </div>
+                    
+                    <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
+                        <h4 className="font-bold text-gray-700 mb-3">Registered Address</h4>
+                        <div className="grid md:grid-cols-2 gap-4">
+                            <Input label="No. / Street" value={data.formData?.addressStreet || ''} onChange={e => updateFormData('addressStreet', e.target.value)} disabled={readOnly} />
+                            <Input label="Town / City" value={data.formData?.addressTown || ''} onChange={e => updateFormData('addressTown', e.target.value)} disabled={readOnly} />
+                            <Input label="Postcode" value={data.formData?.addressPostcode || ''} onChange={e => updateFormData('addressPostcode', e.target.value)} disabled={readOnly} />
+                        </div>
+                    </div>
+
+                    <div className="bg-gray-50 p-4 rounded-xl border border-gray-200 mt-4">
+                        <h4 className="font-bold text-gray-700 mb-3">1.3 Bank Account Details (For Funding)</h4>
+                        <div className="grid md:grid-cols-2 gap-6">
+                            <Input label="Account Name" placeholder="e.g. Blaenavon Blues FC" value={data.formData?.bankAccountName || ''} onChange={e => updateFormData('bankAccountName', e.target.value)} disabled={readOnly} />
+                            <div className="grid grid-cols-2 gap-4">
+                                <Input label="Sort Code" placeholder="XX-XX-XX" value={data.formData?.bankSortCode || ''} onChange={e => updateFormData('bankSortCode', e.target.value)} disabled={readOnly} />
+                                <Input label="Account Number" placeholder="8 digits" value={data.formData?.bankAccountNumber || ''} onChange={e => updateFormData('bankAccountNumber', e.target.value)} disabled={readOnly} />
+                            </div>
+                        </div>
+                        <p className="text-xs text-gray-500 mt-2">These details will only be used if your application is successful.</p>
+                    </div>
+                </section>
+
+                {/* 2. Detailed Proposal */}
+                <section>
+                    <h3 className="text-xl font-bold text-gray-800 font-dynapuff border-b pb-2 mb-4">2. Your Project in More Detail</h3>
+                    <div className="space-y-6">
+                        <Input label="2.1 Project Title" value={data.projectTitle} disabled />
+                        
+                        <div>
+                            <label className="block text-sm font-bold text-gray-700 mb-2 font-dynapuff">2.2 Project Overview</label>
+                            <p className="text-xs text-gray-500 mb-2">Describe main purpose, target beneficiaries, and expected outcomes (SMART objectives). 150-200 words.</p>
+                            <textarea className="w-full px-4 py-3 rounded-xl border border-gray-200 h-32" 
+                                value={data.formData?.projectOverview || ''} onChange={e => updateFormData('projectOverview', e.target.value)} disabled={readOnly} />
+                        </div>
+                        
+                        <div>
+                            <label className="block text-sm font-bold text-gray-700 mb-2 font-dynapuff">2.3 Project Activities and Delivery Plan</label>
+                            <p className="text-xs text-gray-500 mb-2">Outline activities, services, events, key milestones, and responsibilities. 150-200 words.</p>
+                            <textarea className="w-full px-4 py-3 rounded-xl border border-gray-200 h-32" 
+                                value={data.formData?.activities || ''} onChange={e => updateFormData('activities', e.target.value)} disabled={readOnly} />
+                        </div>
+                        
+                        <div>
+                            <label className="block text-sm font-bold text-gray-700 mb-2 font-dynapuff">2.4 Community Benefit and Impact</label>
+                            <p className="text-xs text-gray-500 mb-2">How it responds to top priorities, short-term and long-term impacts. 150-200 words.</p>
+                            <textarea className="w-full px-4 py-3 rounded-xl border border-gray-200 h-32" 
+                                value={data.formData?.communityBenefit || ''} onChange={e => updateFormData('communityBenefit', e.target.value)} disabled={readOnly} />
+                        </div>
+                        
+                         <div>
+                            <label className="block text-sm font-bold text-gray-700 mb-2 font-dynapuff">2.5 Collaborations and Partnerships</label>
+                            <p className="text-xs text-gray-500 mb-2">Identify partners and their roles. 75-100 words.</p>
+                            <textarea className="w-full px-4 py-3 rounded-xl border border-gray-200 h-24" 
+                                value={data.formData?.collaborations || ''} onChange={e => updateFormData('collaborations', e.target.value)} disabled={readOnly} />
+                        </div>
+                        
+                        <div>
+                            <label className="block text-sm font-bold text-gray-700 mb-2 font-dynapuff">2.6 Risk Management and Feasibility</label>
+                            <p className="text-xs text-gray-500 mb-2">Identify risks/challenges and how you will manage them. 50-75 words.</p>
+                            <textarea className="w-full px-4 py-3 rounded-xl border border-gray-200 h-24" 
+                                value={data.formData?.risks || ''} onChange={e => updateFormData('risks', e.target.value)} disabled={readOnly} />
+                        </div>
+                    </div>
+                </section>
+                
+                {/* 2.7 & 2.8 Alignment Justification (Dynamic based on Part 1) */}
+                <section>
+                    <h3 className="text-xl font-bold text-gray-800 font-dynapuff border-b pb-2 mb-4">2.7 & 2.8 Alignment</h3>
+                    
+                    <div className="mb-6">
+                        <h4 className="font-bold text-gray-700 mb-2">2.7 Alignment with Marmot Principles</h4>
+                        <p className="text-xs text-gray-500 mb-4">Explain how your project supports the principles you selected in Part 1.</p>
+                        
+                        {!data.formData?.marmotPrinciples || data.formData.marmotPrinciples.length === 0 ? (
+                            <div className="text-gray-400 italic">No Marmot Principles selected in Part 1.</div>
+                        ) : (
+                            <div className="space-y-4">
+                                {data.formData.marmotPrinciples.map(principle => (
+                                    <div key={principle} className="bg-purple-50 p-4 rounded-xl border border-purple-100">
+                                        <div className="font-bold text-brand-purple mb-2">{principle}</div>
+                                        <textarea 
+                                            className="w-full px-3 py-2 rounded border border-gray-200 text-sm"
+                                            placeholder="Practical example of how your project contributes..."
+                                            value={data.formData?.marmotExplanations?.[principle] || ''}
+                                            onChange={e => {
+                                                const newExplanations = { ...data.formData?.marmotExplanations, [principle]: e.target.value };
+                                                updateFormData('marmotExplanations', newExplanations);
+                                            }}
+                                            disabled={readOnly}
+                                        />
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                    
+                    <div>
+                        <h4 className="font-bold text-gray-700 mb-2">2.8 Wellbeing of Future Generations (WFG) Goals</h4>
+                         <p className="text-xs text-gray-500 mb-4">Justify only those you ticked in Part 1.</p>
+
+                        {!data.formData?.wfgGoals || data.formData.wfgGoals.length === 0 ? (
+                            <div className="text-gray-400 italic">No WFG Goals selected in Part 1.</div>
+                        ) : (
+                            <div className="space-y-4">
+                                {data.formData.wfgGoals.map(goal => (
+                                    <div key={goal} className="bg-teal-50 p-4 rounded-xl border border-teal-100">
+                                        <div className="font-bold text-brand-teal mb-2">{goal}</div>
+                                        <textarea 
+                                            className="w-full px-3 py-2 rounded border border-gray-200 text-sm"
+                                            placeholder="Specific activity or outcome..."
+                                            value={data.formData?.wfgExplanations?.[goal] || ''}
+                                            onChange={e => {
+                                                const newExplanations = { ...data.formData?.wfgExplanations, [goal]: e.target.value };
+                                                updateFormData('wfgExplanations', newExplanations);
+                                            }}
+                                            disabled={readOnly}
+                                        />
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                </section>
+                
+                {/* 3. Project Timeline */}
+                <section>
+                    <h3 className="text-xl font-bold text-gray-800 font-dynapuff border-b pb-2 mb-4">3. Project Timeline</h3>
+                    <p className="text-sm text-gray-600 mb-4">Provide definitive dates.</p>
+                    <div className="grid md:grid-cols-3 gap-4">
+                        <Input label="Start Date" type="date" value={data.formData?.startDate || ''} onChange={e => updateFormData('startDate', e.target.value)} disabled={readOnly} />
+                        <Input label="End Date" type="date" value={data.formData?.endDate || ''} onChange={e => updateFormData('endDate', e.target.value)} disabled={readOnly} />
+                        <Input label="Duration" placeholder="e.g. 6 months" value={data.formData?.duration || ''} onChange={e => updateFormData('duration', e.target.value)} disabled={readOnly} />
+                    </div>
+                </section>
+
+                {/* 4. Detailed Budget */}
+                <section>
+                    <h3 className="text-xl font-bold text-gray-800 font-dynapuff border-b pb-2 mb-4">4. Budget and Cost Breakdown</h3>
+                    <p className="text-sm text-gray-600 mb-4">Please list all costs associated with your project. You can add as many rows as needed.</p>
+                    
+                    <div className="space-y-2 mb-4">
+                        {/* Header Row */}
+                        <div className="hidden md:grid grid-cols-12 gap-2 font-bold text-gray-500 text-sm px-2">
+                            <div className="col-span-5">Item Description</div>
+                            <div className="col-span-4">Notes / Justification</div>
+                            <div className="col-span-2">Cost (£)</div>
+                            <div className="col-span-1"></div>
+                        </div>
+
+                        {budgetLines.map((line, idx) => (
+                            <div key={idx} className="grid grid-cols-1 md:grid-cols-12 gap-2 items-start bg-gray-50 p-2 rounded-lg">
+                                <div className="md:col-span-5">
+                                    <input className="w-full px-3 py-2 rounded border border-gray-300" placeholder="Item" value={line.item} onChange={e => handleBudgetChange(idx, 'item', e.target.value)} disabled={readOnly} />
+                                </div>
+                                <div className="md:col-span-4">
+                                    <input className="w-full px-3 py-2 rounded border border-gray-300" placeholder="Note" value={line.note} onChange={e => handleBudgetChange(idx, 'note', e.target.value)} disabled={readOnly} />
+                                </div>
+                                <div className="md:col-span-2">
+                                    <input className="w-full px-3 py-2 rounded border border-gray-300" type="number" placeholder="0.00" value={line.cost} onChange={e => handleBudgetChange(idx, 'cost', e.target.value)} disabled={readOnly} />
+                                </div>
+                                <div className="md:col-span-1 flex justify-end">
+                                    {!readOnly && (
+                                        <button type="button" onClick={() => removeBudgetLine(idx)} className="text-red-500 hover:bg-red-100 p-2 rounded">
+                                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+
+                    {!readOnly && (
+                        <Button type="button" variant="secondary" onClick={addBudgetLine} size="sm" className="mb-6">
+                            + Add Budget Item
+                        </Button>
+                    )}
+
+                    <div className="flex justify-end items-center gap-4 bg-teal-50 p-4 rounded-xl border border-teal-200 mb-6">
+                        <span className="font-bold text-teal-800 text-lg">Total Project Cost:</span>
+                        <span className="font-bold text-2xl text-teal-900">£{data.totalCost?.toFixed(2) || '0.00'}</span>
+                    </div>
+                    
+                    <div>
+                        <label className="block text-sm font-bold text-gray-700 mb-2 font-dynapuff">4.1 Area-Specific Costs / 4.2 Additional Budget Information</label>
+                        <p className="text-xs text-gray-500 mb-2">Include in-kind contributions, match funding, or cross-area breakdowns. 100-150 words.</p>
+                        <textarea className="w-full px-4 py-3 rounded-xl border border-gray-200 h-24" 
+                            value={data.formData?.additionalBudgetInfo || ''} onChange={e => updateFormData('additionalBudgetInfo', e.target.value)} disabled={readOnly} />
+                    </div>
+                </section>
+
+                {/* Declarations & Checklists */}
+                <section>
+                    <h3 className="text-xl font-bold text-gray-800 font-dynapuff border-b pb-2 mb-4">Declarations & Attachments</h3>
+                    
+                    <div className="mb-6">
+                        <h4 className="font-bold text-gray-700 mb-3">4.4 Attachments Checklist</h4>
+                        <div className="grid md:grid-cols-2 gap-2">
+                            {[
+                                "Constitution / Governing Document",
+                                "Equality & Inclusion Policy",
+                                "Safeguarding Policy",
+                                "Data Protection / GDPR Policy",
+                                "Recent Bank Statement",
+                                "Insurance, DBS, Qualification Certs",
+                                "Public Liability Insurance"
+                            ].map(item => (
+                                <label key={item} className="flex items-center gap-2 text-sm text-gray-700 p-2 border rounded-lg hover:bg-gray-50">
+                                    <input 
+                                        type="checkbox" 
+                                        checked={data.formData?.checklist?.includes(item) || false} 
+                                        onChange={() => toggleChecklist(item)} 
+                                        disabled={readOnly} 
+                                        className="accent-brand-darkTeal"
+                                    />
+                                    {item}
+                                </label>
+                            ))}
+                        </div>
+                    </div>
+                    
+                    <div className="mb-6">
+                         <h4 className="font-bold text-gray-700 mb-3">4.5 Declaration Statements</h4>
+                         <div className="space-y-2">
+                            {[
+                                "I consent to the Communities' Choice team withdrawing this application at its discretion.",
+                                "The information in this application is true and accurate.",
+                                "I agree to the GDPR policy and consent to scrutiny/scoring/monitoring.",
+                                "Image/Logo provided for promotion.",
+                                "I confirm other funding sources declared.",
+                                "I acknowledge obligation to attend and present at the Community Voting Event."
+                            ].map((stmt, idx) => (
+                                <label key={idx} className="flex items-start gap-2 text-sm text-gray-700 p-2 border rounded-lg hover:bg-gray-50">
+                                    <input 
+                                        type="checkbox" 
+                                        checked={data.formData?.declarationStatements?.includes(stmt) || false} 
+                                        onChange={() => toggleDeclaration(stmt)} 
+                                        disabled={readOnly} 
+                                        className="mt-1 accent-brand-darkTeal"
+                                    />
+                                    {stmt}
+                                </label>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
+                        <div className="grid md:grid-cols-2 gap-6">
+                             <Input label="Name (Signature)" value={data.formData?.declarationName2 || ''} onChange={e => updateFormData('declarationName2', e.target.value)} disabled={readOnly} />
+                             <Input label="Date" type="date" value={data.formData?.declarationDate2 || ''} onChange={e => updateFormData('declarationDate2', e.target.value)} disabled={readOnly} />
+                        </div>
+                    </div>
+                </section>
+
+                <div className="flex gap-4 border-t pt-8">
+                    {!readOnly && (
+                        <>
+                            <Button type="submit" size="lg" className="flex-1 shadow-xl bg-brand-darkTeal hover:bg-teal-800">Submit Full Application</Button>
+                            <Button type="button" variant="ghost" onClick={onCancel}>Save Draft & Exit</Button>
+                        </>
+                    )}
+                </div>
+            </form>
+        </div>
+    );
+};
+
+// --- SCORE MODAL (COMMITTEE) ---
+const ScoreModal: React.FC<{
+    isOpen: boolean;
+    onClose: () => void;
+    app: Application;
+    existingScore?: Score;
+    onSubmit: (s: Score) => void;
+    readOnly?: boolean;
+}> = ({ isOpen, onClose, app, existingScore, onSubmit, readOnly }) => {
+    const user = JSON.parse(localStorage.getItem('users') || '[]').find((u:User) => u.email.includes('committee')) || { uid: 'guest', displayName: 'Guest' }; // Fallback for dev
+
+    const [scores, setScores] = useState<Record<string, number>>(existingScore?.scores || {});
+    const [notes, setNotes] = useState<Record<string, string>>(existingScore?.notes || {});
+
+    // Live Calculation
+    const { rawTotal, weightedTotalPercent } = useMemo(() => {
+        let rTotal = 0;
+        let wTotal = 0;
+        
+        SCORING_CRITERIA.forEach(c => {
+            const val = scores[c.id] || 0;
+            rTotal += val;
+            wTotal += (val / 3) * c.weight; // (Score / Max) * Weight
+        });
+
+        return { rawTotal: rTotal, weightedTotalPercent: Math.round(wTotal) };
+    }, [scores]);
+
+    const handleSubmit = () => {
+        const scoreData: Score = {
+            appId: app.id,
+            scorerId: existingScore?.scorerId || user.uid,
+            scorerName: existingScore?.scorerName || user.displayName || 'Committee Member',
+            scores,
+            notes,
+            isFinal: true,
+            total: rawTotal,
+            timestamp: Date.now()
+        };
+        onSubmit(scoreData);
+        onClose();
+    };
+
+    return (
+        <Modal isOpen={isOpen} onClose={onClose} title={`Score: ${app.projectTitle}`} size="xl">
+            <div className="flex flex-col h-full">
+                <div className="flex-1 overflow-y-auto pr-2 space-y-6">
+                    {SCORING_CRITERIA.map((criterion) => (
+                        <div key={criterion.id} className="bg-gray-50 p-4 rounded-xl border border-gray-200">
+                             <div className="flex justify-between items-start mb-2">
+                                <div>
+                                    <h4 className="font-bold text-gray-800">{criterion.name} <span className="text-xs text-gray-500 font-normal">({criterion.weight}%)</span></h4>
+                                    <p className="text-sm text-gray-600 mb-2">{criterion.guidance}</p>
+                                </div>
+                                <div className="flex gap-1 bg-white p-1 rounded-lg border border-gray-300">
+                                    {[0, 1, 2, 3].map(val => (
+                                        <button
+                                            key={val}
+                                            onClick={() => !readOnly && setScores(prev => ({ ...prev, [criterion.id]: val }))}
+                                            className={`w-8 h-8 rounded-md font-bold transition-all ${
+                                                scores[criterion.id] === val 
+                                                ? 'bg-brand-purple text-white shadow-md transform scale-110' 
+                                                : 'text-gray-400 hover:bg-gray-100'
+                                            }`}
+                                            disabled={readOnly}
+                                        >
+                                            {val}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                            
+                            <details className="text-xs text-gray-500 mb-3 cursor-pointer">
+                                <summary>View Scoring Matrix Guidance</summary>
+                                <div className="mt-2 p-2 bg-white rounded border border-gray-100" dangerouslySetInnerHTML={{ __html: criterion.details }} />
+                            </details>
+
+                            <input 
+                                className="w-full text-sm p-2 rounded border border-gray-200" 
+                                placeholder="Add comments/justification..." 
+                                value={notes[criterion.id] || ''}
+                                onChange={e => setNotes(prev => ({ ...prev, [criterion.id]: e.target.value }))}
+                                disabled={readOnly}
+                            />
+                        </div>
+                    ))}
+                </div>
+                
+                <div className="mt-6 pt-4 border-t border-gray-200 flex justify-between items-center bg-white sticky bottom-0">
+                     <div className="flex gap-4">
+                        <div className="bg-purple-50 px-4 py-2 rounded-lg border border-purple-100">
+                            <span className="block text-xs text-purple-600 font-bold uppercase">Raw Score</span>
+                            <span className="text-xl font-bold text-purple-800">{rawTotal} / 30</span>
+                        </div>
+                        <div className={`px-4 py-2 rounded-lg border flex flex-col items-center ${
+                            weightedTotalPercent >= 50 ? 'bg-green-50 border-green-100' : 'bg-red-50 border-red-100'
+                        }`}>
+                            <span className={`block text-xs font-bold uppercase ${weightedTotalPercent >= 50 ? 'text-green-600' : 'text-red-600'}`}>Weighted %</span>
+                            <span className={`text-xl font-bold ${weightedTotalPercent >= 50 ? 'text-green-800' : 'text-red-800'}`}>{weightedTotalPercent}%</span>
+                        </div>
+                    </div>
+                    
+                    {!readOnly && (
+                        <div className="flex gap-2">
+                             <Button variant="ghost" onClick={onClose}>Cancel</Button>
+                             <Button onClick={handleSubmit}>Submit Scores</Button>
+                        </div>
+                    )}
+                </div>
+            </div>
+        </Modal>
+    );
+};
+
+
+// --- DASHBOARDS ---
+
+export const ApplicantDashboard: React.FC<{ user: User }> = ({ user }) => {
+    const [apps, setApps] = useState<Application[]>([]);
+    const [viewMode, setViewMode] = useState<'list' | 'stage1' | 'stage2'>('list');
+    const [activeApp, setActiveApp] = useState<Partial<Application>>({});
+    const [isProfileOpen, setIsProfileOpen] = useState(false);
+    const [currUser, setCurrUser] = useState(user);
+
+    useEffect(() => {
+        api.getApplications().then(all => setApps(all.filter(a => a.userId === user.uid)));
+    }, [user.uid, viewMode]);
+
+    const startStage1 = () => {
+        setActiveApp({ 
+            userId: user.uid, 
+            status: 'Draft', 
+            submissionMethod: 'digital',
+            formData: {
+                budgetBreakdown: []
+            }
+        });
+        setViewMode('stage1');
+    };
+
+    const startStage2 = (app: Application) => {
+        setActiveApp({ ...app, status: 'Draft' }); // Preserves ID and Stage 1 data
+        setViewMode('stage2');
+    };
+
+    const handleSubmitStage1 = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (activeApp.id) {
+             await api.updateApplication(activeApp.id, { ...activeApp, status: 'Submitted-Stage1' });
+        } else {
+             await api.createApplication({ ...activeApp, status: 'Submitted-Stage1' } as any);
+        }
+        setViewMode('list');
+    };
+    
+    const handleSubmitStage2 = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (activeApp.id) {
+             await api.updateApplication(activeApp.id, { ...activeApp, status: 'Submitted-Stage2' });
+        }
+        setViewMode('list');
+    };
+
+    if (viewMode === 'stage1') return <DigitalStage1Form data={activeApp} onChange={setActiveApp} onSubmit={handleSubmitStage1} onCancel={() => setViewMode('list')} />;
+    if (viewMode === 'stage2') return <DigitalStage2Form data={activeApp} onChange={setActiveApp} onSubmit={handleSubmitStage2} onCancel={() => setViewMode('list')} />;
+
+    return (
+        <div className="container mx-auto px-4 py-8 animate-fade-in">
+             <div className="flex justify-between items-center mb-8">
+                <div>
+                    <h1 className="text-3xl font-bold font-dynapuff text-brand-purple">Welcome, {currUser.displayName}!</h1>
+                    <p className="text-gray-600">Manage your applications and profile.</p>
+                </div>
+                <Button variant="outline" onClick={() => setIsProfileOpen(true)}>Edit Profile</Button>
+            </div>
+
+            <div className="grid md:grid-cols-3 gap-6">
+                <div className="md:col-span-2 space-y-6">
+                    <Card>
+                        <div className="flex justify-between items-center mb-6">
+                            <h2 className="text-xl font-bold font-dynapuff text-gray-800">My Applications</h2>
+                            <Button onClick={startStage1}>+ New EOI</Button>
+                        </div>
+                        
+                        {apps.length === 0 ? (
+                            <div className="text-center py-10 bg-gray-50 rounded-xl border border-dashed border-gray-300">
+                                <p className="text-gray-500 mb-4">You haven't submitted any applications yet.</p>
+                                <Button variant="secondary" onClick={startStage1}>Start Stage 1 (EOI)</Button>
+                            </div>
+                        ) : (
+                            <div className="space-y-4">
+                                {apps.map(app => (
+                                    <div key={app.id} className="bg-white border border-gray-100 p-4 rounded-xl shadow-sm flex flex-col md:flex-row justify-between items-center gap-4">
+                                        <div>
+                                            <div className="flex items-center gap-2 mb-1">
+                                                <h3 className="font-bold text-lg text-brand-purple">{app.projectTitle}</h3>
+                                                <Badge>{app.status}</Badge>
+                                            </div>
+                                            <p className="text-sm text-gray-500">Ref: {app.ref} • {new Date(app.createdAt).toLocaleDateString()}</p>
+                                        </div>
+                                        <div className="flex gap-2">
+                                            {app.status === 'Draft' && <Button size="sm" onClick={() => { setActiveApp(app); setViewMode('stage1'); }}>Edit</Button>}
+                                            {app.status === 'Invited-Stage2' && <Button size="sm" variant="secondary" onClick={() => startStage2(app)}>Start Stage 2</Button>}
+                                            {app.status === 'Submitted-Stage1' && <span className="text-sm text-gray-400 italic px-2">Under Review</span>}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </Card>
+                </div>
+
+                <div>
+                    <Card className="bg-gradient-to-br from-purple-50 to-white">
+                        <h3 className="font-bold font-dynapuff text-brand-purple mb-4">Quick Guide</h3>
+                        <ul className="space-y-3 text-sm text-gray-600">
+                            <li className="flex gap-2"><span className="font-bold text-brand-teal">1.</span> Submit Stage 1 Expression of Interest (EOI).</li>
+                            <li className="flex gap-2"><span className="font-bold text-brand-teal">2.</span> Committee reviews EOI against priorities.</li>
+                            <li className="flex gap-2"><span className="font-bold text-brand-teal">3.</span> Successful projects invited to Stage 2.</li>
+                            <li className="flex gap-2"><span className="font-bold text-brand-teal">4.</span> Submit detailed Full Application.</li>
+                            <li className="flex gap-2"><span className="font-bold text-brand-teal">5.</span> Public vote decides the winners!</li>
+                        </ul>
+                    </Card>
                 </div>
             </div>
             
-            <div className="grid gap-6">
-                {apps.length === 0 && (
-                    <div className="text-center py-16 bg-white rounded-3xl border-2 border-dashed border-gray-200">
-                        <p className="text-gray-400 font-bold text-lg mb-4">You haven't submitted any applications yet.</p>
-                    </div>
-                )}
-                {apps.map(app => (
-                    <Card key={app.id} className="flex flex-col md:flex-row justify-between items-center group hover:border-purple-200 transition-colors">
-                        <div className="flex gap-6 items-center w-full">
-                            <div className="w-16 h-16 rounded-2xl bg-purple-50 flex items-center justify-center text-brand-purple font-bold text-xl font-dynapuff shrink-0">
-                                {app.amountRequested > 5000 ? '£££' : '££'}
-                            </div>
-                            <div>
-                                <div className="flex items-center gap-2 mb-1">
-                                    <span className="text-xs font-mono text-gray-400 font-bold">{app.ref}</span>
-                                    <Badge>{app.status}</Badge>
-                                </div>
-                                <h3 className="font-bold text-xl text-gray-800 group-hover:text-brand-purple transition-colors">{app.projectTitle}</h3>
-                                <p className="text-sm text-gray-500">{app.area} • {new Date(app.createdAt).toLocaleDateString()}</p>
-                            </div>
-                        </div>
-                        <div className="mt-4 md:mt-0 md:ml-auto shrink-0 flex flex-col items-end gap-2">
-                            {app.status === 'Invited-Stage2' && (
-                                <Button size="sm" onClick={() => setStage2App(app)} className="bg-amber-500 hover:bg-amber-600 text-white shadow-amber-200">
-                                    Complete Stage 2
-                                </Button>
-                            )}
-                            <Button size="sm" variant="outline">View Details</Button>
-                        </div>
-                    </Card>
-                ))}
-            </div>
-
-            {creationMethod === 'selecting' && (
-                <Modal isOpen={true} onClose={() => setCreationMethod('none')} title="Start Application" size="lg">
-                    <div className="grid md:grid-cols-2 gap-6">
-                        <div onClick={() => setCreationMethod('digital')} className="border-2 border-brand-purple bg-purple-50 p-6 rounded-2xl cursor-pointer hover:shadow-lg transition-all text-center">
-                            <div className="text-4xl mb-4">💻</div>
-                            <h3 className="font-bold font-dynapuff text-brand-purple text-xl mb-2">Digital Form</h3>
-                            <p className="text-sm text-gray-600">Complete the integrated online form directly in the portal.</p>
-                            <Button className="mt-4 w-full">Start Digital EOI</Button>
-                        </div>
-                        <div onClick={() => setCreationMethod('upload')} className="border-2 border-gray-200 hover:border-brand-teal hover:bg-teal-50 p-6 rounded-2xl cursor-pointer hover:shadow-lg transition-all text-center group">
-                            <div className="text-4xl mb-4">📄</div>
-                            <h3 className="font-bold font-dynapuff text-gray-700 group-hover:text-brand-teal text-xl mb-2">Upload PDF</h3>
-                            <p className="text-sm text-gray-600">Download the PDF, fill it out, and upload the scanned copy.</p>
-                            <Button variant="outline" className="mt-4 w-full">Upload PDF EOI</Button>
-                        </div>
-                    </div>
-                </Modal>
-            )}
-
-            <ProfileModal isOpen={isProfileOpen} onClose={() => setIsProfileOpen(false)} user={currentUser} onSave={setCurrentUser} />
-        </div>
-      );
-  }
-
-  // --- RENDER: UPLOAD FORM ---
-  if (creationMethod === 'upload') {
-      return (
-        <div className="max-w-2xl mx-auto py-12 px-4 animate-fade-in">
-             <Button variant="ghost" onClick={() => setCreationMethod('none')} className="mb-4">&larr; Back</Button>
-             <Card>
-                 <h2 className="text-2xl font-bold font-dynapuff text-brand-teal mb-2">Upload EOI PDF</h2>
-                 <p className="text-gray-600 mb-6">Please upload your completed Part 1 Expression of Interest PDF.</p>
-                 <form onSubmit={handleEOISubmit} className="space-y-6">
-                     <div className="grid md:grid-cols-2 gap-6">
-                        <Input label="Project Title" value={formData.projectTitle} onChange={e => setFormData({...formData, projectTitle: e.target.value})} required />
-                        <Input label="Organization Name" value={formData.orgName} onChange={e => setFormData({...formData, orgName: e.target.value})} required />
-                     </div>
-                     <div className="grid md:grid-cols-2 gap-6">
-                        <div>
-                             <label className="block text-sm font-bold text-gray-700 mb-2 font-dynapuff">Primary Area</label>
-                             <select className="w-full px-4 py-3 rounded-xl border border-gray-200" value={formData.area} onChange={e => setFormData({...formData, area: e.target.value as any})}>
-                                 {AREAS.map(a => <option key={a} value={a}>{a}</option>)}
-                             </select>
-                        </div>
-                        <Input label="Total Amount Requested (£)" type="number" value={formData.amountRequested} onChange={e => setFormData({...formData, amountRequested: Number(e.target.value)})} required />
-                     </div>
-                     <div className="border-2 border-dashed border-gray-300 rounded-xl p-10 text-center bg-gray-50 hover:bg-gray-100 transition-colors cursor-pointer">
-                        <p className="font-bold text-gray-600">Click to Select PDF</p>
-                     </div>
-                     <div className="flex justify-end gap-3 pt-4 border-t">
-                         <Button type="button" variant="ghost" onClick={() => setCreationMethod('none')}>Cancel</Button>
-                         <Button type="submit" variant="secondary">Submit Application</Button>
-                     </div>
-                 </form>
-             </Card>
-        </div>
-      );
-  }
-
-  // --- RENDER: DIGITAL EOI FORM ---
-  if (creationMethod === 'digital') {
-      return (
-          <div className="max-w-4xl mx-auto py-8 px-4 animate-fade-in">
-              <Button variant="ghost" onClick={() => setCreationMethod('none')} className="mb-4">&larr; Cancel</Button>
-              <div className="bg-white rounded-3xl shadow-xl border border-purple-100 overflow-hidden">
-                  <div className="bg-brand-purple p-6 text-white">
-                      <h2 className="text-2xl font-bold font-dynapuff">Expression of Interest</h2>
-                      <p className="opacity-90">Stage 1 Application Form (Digital)</p>
-                  </div>
-                  <form onSubmit={handleEOISubmit} className="p-8 space-y-10">
-                      <section>
-                          <h3 className="text-xl font-bold text-gray-800 font-dynapuff border-b pb-2 mb-4">1. Communities' Choice Area</h3>
-                          <div className="grid md:grid-cols-3 gap-4 mb-4">
-                              {AREAS.map(area => (
-                                  <label key={area} className={`flex items-center gap-3 p-4 rounded-xl border cursor-pointer transition-all ${formData.area === area ? 'bg-purple-50 border-brand-purple' : 'bg-white border-gray-200'}`}>
-                                      <input type="radio" name="area" value={area} checked={formData.area === area} onChange={() => setFormData({...formData, area: area})} className="w-5 h-5 accent-brand-purple" />
-                                      <span className="font-bold text-sm">{area}</span>
-                                  </label>
-                              ))}
-                          </div>
-                      </section>
-                      <section>
-                          <h3 className="text-xl font-bold text-gray-800 font-dynapuff border-b pb-2 mb-4">2. Applicant Information</h3>
-                          <div className="grid md:grid-cols-2 gap-6 mb-4">
-                              <Input label="Organisation Name" value={formData.orgName} onChange={e => setFormData({...formData, orgName: e.target.value})} />
-                              <Input label="Position / Job Title" value={formData.formData?.contactPosition} onChange={e => updateFormData('contactPosition', e.target.value)} />
-                              <Input label="Contact Name" value={formData.applicantName} onChange={e => setFormData({...formData, applicantName: e.target.value})} />
-                              <Input label="Email" type="email" value={formData.formData?.contactEmail} onChange={e => updateFormData('contactEmail', e.target.value)} />
-                          </div>
-                      </section>
-                      <section>
-                          <h3 className="text-xl font-bold text-gray-800 font-dynapuff border-b pb-2 mb-4">5. Project Details</h3>
-                          <Input label="5.1 Project Title" value={formData.projectTitle} onChange={e => setFormData({...formData, projectTitle: e.target.value})} />
-                          <div className="mb-4">
-                              <label className="block text-sm font-bold text-gray-700 mb-2 font-dynapuff">5.2 Project Summary</label>
-                              <textarea className="w-full px-4 py-3 rounded-xl border border-gray-200 h-32" value={formData.summary} onChange={e => setFormData({...formData, summary: e.target.value})} />
-                          </div>
-                      </section>
-                      <section>
-                          <h3 className="text-xl font-bold text-gray-800 font-dynapuff border-b pb-2 mb-4">6. Budget</h3>
-                          <div className="grid md:grid-cols-2 gap-6 mb-4">
-                              <Input label="Total Project Cost (£)" type="number" value={formData.totalCost} onChange={e => setFormData({...formData, totalCost: Number(e.target.value)})} />
-                              <Input label="Amount Applied For (£)" type="number" value={formData.amountRequested} onChange={e => setFormData({...formData, amountRequested: Number(e.target.value)})} />
-                          </div>
-                      </section>
-                      <section>
-                          <h3 className="text-xl font-bold text-gray-800 font-dynapuff border-b pb-2 mb-4">7. Alignment</h3>
-                           <div className="mb-6">
-                                <h4 className="font-bold text-gray-700 mb-2">Marmot Principles (Tick all that apply)</h4>
-                                <div className="grid md:grid-cols-2 gap-2">
-                                    {MARMOT_PRINCIPLES.map(p => (
-                                        <label key={p} className="flex items-start gap-2 text-sm text-gray-600">
-                                            <input type="checkbox" className="mt-1" checked={formData.formData?.marmotPrinciples?.includes(p)} onChange={(e) => {
-                                                const current = formData.formData?.marmotPrinciples || [];
-                                                const updated = e.target.checked ? [...current, p] : current.filter(x => x !== p);
-                                                updateFormData('marmotPrinciples', updated);
-                                            }} />
-                                            {p}
-                                        </label>
-                                    ))}
-                                </div>
-                           </div>
-                           <div className="mb-6">
-                                <h4 className="font-bold text-gray-700 mb-2">WFG Goals (Tick all that apply)</h4>
-                                <div className="grid md:grid-cols-2 gap-2">
-                                    {WFG_GOALS.map(g => (
-                                        <label key={g} className="flex items-start gap-2 text-sm text-gray-600">
-                                            <input type="checkbox" className="mt-1" checked={formData.formData?.wfgGoals?.includes(g)} onChange={(e) => {
-                                                const current = formData.formData?.wfgGoals || [];
-                                                const updated = e.target.checked ? [...current, g] : current.filter(x => x !== g);
-                                                updateFormData('wfgGoals', updated);
-                                            }} />
-                                            {g}
-                                        </label>
-                                    ))}
-                                </div>
-                           </div>
-                      </section>
-                      <section>
-                          <h3 className="text-xl font-bold text-gray-800 font-dynapuff border-b pb-2 mb-4">8. Declarations</h3>
-                          <div className="grid md:grid-cols-2 gap-6">
-                              <Input label="Signed (Type Name)" value={formData.formData?.declarationName} onChange={e => updateFormData('declarationName', e.target.value)} required />
-                              <Input label="Date" type="date" value={formData.formData?.declarationDate} onChange={e => updateFormData('declarationDate', e.target.value)} required />
-                          </div>
-                      </section>
-                      <div className="flex justify-end pt-6 border-t">
-                          <Button type="submit" size="lg" className="w-full md:w-auto shadow-xl">Submit Stage 1 Application</Button>
-                      </div>
-                  </form>
-              </div>
-          </div>
-      );
-  }
-
-  // --- RENDER: STAGE 2 FORM (DIGITAL) ---
-  return (
-    <div className="max-w-5xl mx-auto py-12 px-4">
-        {stage2App && (
-            <Modal isOpen={true} onClose={() => setStage2App(null)} title="Stage 2: Full Application" size="full">
-                {stage2App.submissionMethod === 'upload' ? (
-                     <div className="max-w-2xl mx-auto">
-                         <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 mb-6">
-                             <h4 className="font-bold text-blue-800">Upload PDF Submission</h4>
-                             <p className="text-sm text-blue-600">You submitted your EOI via PDF upload. Please upload your Part 2 PDF here.</p>
-                         </div>
-                         <form onSubmit={handleStage2Submit} className="space-y-6">
-                             <div className="border-2 border-dashed border-gray-300 rounded-xl p-10 text-center bg-gray-50 hover:bg-gray-100 transition-colors cursor-pointer">
-                                <p className="font-bold text-gray-600">Click to Select Part 2 PDF</p>
-                             </div>
-                             <div className="flex justify-end gap-2">
-                                <Button type="button" variant="ghost" onClick={() => setStage2App(null)}>Cancel</Button>
-                                <Button type="submit">Submit Final Application</Button>
-                             </div>
-                         </form>
-                     </div>
-                ) : (
-                    <form onSubmit={handleStage2Submit} className="space-y-8 p-4">
-                        <div className="bg-purple-50 p-4 rounded-xl border border-purple-100 flex justify-between items-center">
-                            <div>
-                                <h3 className="font-bold text-brand-purple">{stage2App.projectTitle}</h3>
-                                <p className="text-sm text-gray-600">Ref: {stage2App.ref} | Org: {stage2App.orgName}</p>
-                            </div>
-                            <Badge variant="amber">Stage 2</Badge>
-                        </div>
-                        
-                        {/* 1.3 Bank Details */}
-                        <section className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
-                            <h3 className="text-lg font-bold font-dynapuff mb-4 text-gray-800">1.3 Bank Account & Registration</h3>
-                            <div className="grid md:grid-cols-3 gap-4 mb-4">
-                                <Input label="Bank Account Name" value={stage2Data.bankAccountName} onChange={e => updateStage2Data('bankAccountName', e.target.value)} />
-                                <Input label="Account Number" value={stage2Data.bankAccountNumber} onChange={e => updateStage2Data('bankAccountNumber', e.target.value)} />
-                                <Input label="Sort Code" value={stage2Data.bankSortCode} onChange={e => updateStage2Data('bankSortCode', e.target.value)} />
-                            </div>
-                            <div className="grid md:grid-cols-2 gap-4">
-                                <Input label="Charity Number (if applicable)" value={stage2Data.charityNumber} onChange={e => updateStage2Data('charityNumber', e.target.value)} />
-                                <Input label="Companies House No (if applicable)" value={stage2Data.companyNumber} onChange={e => updateStage2Data('companyNumber', e.target.value)} />
-                            </div>
-                        </section>
-
-                        {/* 2.2 Project Overview */}
-                        <section className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
-                            <h3 className="text-lg font-bold font-dynapuff mb-4 text-gray-800">2.2 Project Overview</h3>
-                            <label className="block text-sm text-gray-600 mb-2">Describe your project, main purpose, beneficiaries, and SMART objectives. (150-200 words)</label>
-                            <textarea className="w-full p-4 border rounded-xl" rows={4} value={stage2Data.summary} onChange={e => updateStage2Data('summary', e.target.value)}></textarea>
-                        </section>
-
-                        {/* 2.3 Activities */}
-                        <section className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
-                            <h3 className="text-lg font-bold font-dynapuff mb-4 text-gray-800">2.3 Activities & Delivery Plan</h3>
-                            <label className="block text-sm text-gray-600 mb-2">Outline activities, key milestones, and who is responsible.</label>
-                            <textarea className="w-full p-4 border rounded-xl" rows={4} value={stage2Data.activities} onChange={e => updateStage2Data('activities', e.target.value)}></textarea>
-                        </section>
-
-                        {/* 2.4 Community Benefit */}
-                        <section className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
-                             <h3 className="text-lg font-bold font-dynapuff mb-4 text-gray-800">2.4 Community Benefit & Impact</h3>
-                             <label className="block text-sm text-gray-600 mb-2">How does it respond to priorities? What are short/long-term impacts?</label>
-                             <textarea className="w-full p-4 border rounded-xl" rows={4} value={stage2Data.communityBenefit} onChange={e => updateStage2Data('communityBenefit', e.target.value)}></textarea>
-                        </section>
-
-                         {/* 2.5 Collaborations & 2.6 Risks */}
-                         <div className="grid md:grid-cols-2 gap-6">
-                            <section className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
-                                <h3 className="text-lg font-bold font-dynapuff mb-4 text-gray-800">2.5 Collaborations</h3>
-                                <textarea className="w-full p-4 border rounded-xl" rows={4} placeholder="Partners and their roles..." value={stage2Data.collaborations} onChange={e => updateStage2Data('collaborations', e.target.value)}></textarea>
-                            </section>
-                            <section className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
-                                <h3 className="text-lg font-bold font-dynapuff mb-4 text-gray-800">2.6 Risk Management</h3>
-                                <textarea className="w-full p-4 border rounded-xl" rows={4} placeholder="Potential risks and mitigations..." value={stage2Data.risks} onChange={e => updateStage2Data('risks', e.target.value)}></textarea>
-                            </section>
-                         </div>
-
-                         {/* 2.7 Marmot & 2.8 WFG Justification */}
-                         <section className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
-                             <h3 className="text-lg font-bold font-dynapuff mb-4 text-gray-800">2.7 & 2.8 Alignment Justification</h3>
-                             <p className="text-sm text-gray-500 mb-4">Please provide practical examples for the principles/goals you selected in Stage 1.</p>
-                             
-                             {stage2App.formData?.marmotPrinciples?.map(p => (
-                                 <div key={p} className="mb-4">
-                                     <label className="block text-sm font-bold text-purple-700 mb-1">{p}</label>
-                                     <input className="w-full border rounded-lg p-2 text-sm" placeholder="Practical example..." value={stage2Data.marmotExplanations?.[p] || ''} onChange={e => updateStage2Explanation('marmotExplanations', p, e.target.value)} />
-                                 </div>
-                             ))}
-                             {stage2App.formData?.wfgGoals?.map(g => (
-                                 <div key={g} className="mb-4">
-                                     <label className="block text-sm font-bold text-teal-700 mb-1">{g}</label>
-                                     <input className="w-full border rounded-lg p-2 text-sm" placeholder="Specific activity or outcome..." value={stage2Data.wfgExplanations?.[g] || ''} onChange={e => updateStage2Explanation('wfgExplanations', g, e.target.value)} />
-                                 </div>
-                             ))}
-                             {(!stage2App.formData?.marmotPrinciples?.length && !stage2App.formData?.wfgGoals?.length) && <p className="text-gray-400 italic">No principles selected in Stage 1.</p>}
-                         </section>
-
-                        {/* 4. Budget */}
-                        <section className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
-                             <h3 className="text-lg font-bold font-dynapuff mb-4 text-gray-800">4. Budget Breakdown</h3>
-                             <Button type="button" size="sm" onClick={addBudgetRow}>+ Add Item</Button>
-                             <div className="space-y-2 mt-4">
-                                {(stage2Data.budgetBreakdown || []).map((row, i) => (
-                                    <div key={i} className="grid grid-cols-12 gap-2">
-                                        <div className="col-span-8"><input className="w-full border rounded p-2 text-sm" placeholder="Expense Type / Note" value={row.item} onChange={e => updateBudgetRow(i, 'item', e.target.value)} /></div>
-                                        <div className="col-span-4"><input className="w-full border rounded p-2 text-sm" type="number" placeholder="Cost (£)" value={row.cost} onChange={e => updateBudgetRow(i, 'cost', Number(e.target.value))} /></div>
-                                    </div>
-                                ))}
-                                <div className="text-right font-bold pt-2 border-t">
-                                    Total: £{(stage2Data.budgetBreakdown || []).reduce((a,b) => a + Number(b.cost), 0)}
-                                </div>
-                            </div>
-                        </section>
-
-                        <div className="flex justify-end pt-4 border-t">
-                             <Button type="button" variant="ghost" onClick={() => setStage2App(null)}>Cancel</Button>
-                             <Button type="submit" size="lg" className="ml-2">Submit Full Application</Button>
-                        </div>
-                    </form>
-                )}
-            </Modal>
-        )}
-    </div>
-  );
-};
-
-// --- COMMITTEE DASHBOARD ---
-interface CommitteeProps { 
-    user: User; 
-    onUpdateUser: (u: User) => void; 
-    isAdmin?: boolean; 
-    onReturnToAdmin?: () => void;
-}
-
-export const CommitteeDashboard: React.FC<CommitteeProps> = ({ user, onUpdateUser, isAdmin, onReturnToAdmin }) => {
-    const [view, setView] = useState<'home' | 'score' | 'viewer' | 'docs'>('home');
-    const [apps, setApps] = useState<Application[]>([]);
-    const [activeApp, setActiveApp] = useState<Application | null>(null);
-    const [scores, setScores] = useState<Record<string, number>>({});
-    const [myScores, setMyScores] = useState<Score[]>([]);
-    const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
-    const [isSaving, setIsSaving] = useState(false);
-    const [settings, setSettings] = useState<PortalSettings>({ stage1Visible: false, stage2Visible: false, votingOpen: false });
-    const [isProfileOpen, setIsProfileOpen] = useState(false);
-    
-    // Scoring Threshold State
-    const [threshold, setThreshold] = useState(65);
-
-    useEffect(() => {
-        const fetchData = async () => {
-            const portalSettings = await api.getPortalSettings();
-            setSettings(portalSettings);
-            const areaFilter = isAdmin ? 'All' : user.area;
-            const appList = await api.getApplications(areaFilter);
-            let visibleApps = appList;
-            if (!isAdmin) {
-                visibleApps = appList.filter(app => {
-                    const isStage2 = app.status === 'Submitted-Stage2' || app.status === 'Finalist';
-                    if (isStage2) return portalSettings.stage2Visible;
-                    return portalSettings.stage1Visible;
-                });
-            }
-            setApps(visibleApps);
-            const allScoresData = await api.getScores();
-            setMyScores(allScoresData.filter(s => s.scorerId === user.uid));
-        };
-        fetchData();
-    }, [user.area, isAdmin, user.uid, view]);
-
-    const handleStartScoring = (app: Application) => {
-        setActiveApp(app);
-        const existingScore = myScores.find(s => s.appId === app.id);
-        setScores(existingScore ? existingScore.scores : {});
-        setView('score');
-    };
-
-    const handleSaveScore = async (isFinal = false) => {
-        if (!activeApp) return;
-        setIsSaving(true);
-        const total = Object.entries(scores).reduce((total, [criterionId, score]) => {
-            const criterion = SCORING_CRITERIA.find(c => c.id === criterionId);
-            return total + (score / 3) * (criterion?.weight || 0);
-        }, 0);
-
-        const scoreData: Score = {
-            appId: activeApp.id,
-            scorerId: user.uid,
-            scorerName: user.displayName || user.email,
-            scores: scores,
-            notes: {},
-            isFinal: isFinal,
-            total: total,
-            timestamp: Date.now()
-        };
-        await api.saveScore(scoreData);
-        setIsSaving(false);
-        if (isFinal) {
-            alert("Final scores posted!");
-            setActiveApp(null);
-            setView('home');
-        } else {
-            alert("Draft saved successfully.");
-        }
-    };
-    
-    const downloadCSV = () => {
-         // Generate CSV content
-         const headers = ['Ref', 'Title', 'Area', 'My Score', 'Status'];
-         const rows = apps.map(app => {
-             const score = myScores.find(s => s.appId === app.id);
-             return [
-                 app.ref,
-                 `"${app.projectTitle.replace(/"/g, '""')}"`,
-                 app.area,
-                 score ? Math.round(score.total) : 'N/A',
-                 score?.isFinal ? 'Completed' : 'Pending'
-             ].join(',');
-         });
-         const csvContent = [headers.join(','), ...rows].join('\n');
-         const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-         const url = URL.createObjectURL(blob);
-         const link = document.createElement('a');
-         link.href = url;
-         link.setAttribute('download', 'my_scores.csv');
-         document.body.appendChild(link);
-         link.click();
-    };
-
-    const pendingApps = apps.filter(app => {
-        if (app.status !== 'Submitted-Stage2' && app.status !== 'Finalist') return false;
-        const score = myScores.find(s => s.appId === app.id);
-        return !score || !score.isFinal;
-    });
-
-    const renderDigitalApp = (app: Application) => (
-         <div className="p-8 bg-white max-w-3xl mx-auto shadow-sm min-h-full">
-            <h1 className="text-3xl font-bold font-dynapuff text-brand-purple mb-2">{app.projectTitle}</h1>
-            <p className="text-gray-500 mb-8 border-b pb-4">{app.orgName} • {app.ref} • {app.area}</p>
-            <div className="space-y-6">
-                <section>
-                    <h3 className="font-bold text-gray-800 uppercase tracking-widest text-xs border-b border-gray-100 pb-1 mb-3">Project Summary</h3>
-                    <p className="text-gray-700 leading-relaxed">{app.summary}</p>
-                    <div className="mt-4 grid grid-cols-2 gap-4 text-sm bg-gray-50 p-4 rounded-lg">
-                        <div><strong>Requested:</strong> £{app.amountRequested}</div>
-                        <div><strong>Total:</strong> £{app.totalCost}</div>
-                    </div>
-                </section>
-                {(app.formData?.activities || app.formData?.communityBenefit) && (
-                    <section>
-                        <h3 className="font-bold text-gray-800 uppercase tracking-widest text-xs border-b border-gray-100 pb-1 mb-3">Stage 2 Details</h3>
-                        <div className="space-y-4">
-                            <div><h4 className="font-bold text-sm">Activities</h4><p className="text-sm">{app.formData.activities}</p></div>
-                            <div><h4 className="font-bold text-sm">Community Benefit</h4><p className="text-sm">{app.formData.communityBenefit}</p></div>
-                            <div><h4 className="font-bold text-sm">Risks</h4><p className="text-sm">{app.formData.risks}</p></div>
-                        </div>
-                    </section>
-                )}
-                <section>
-                    <h3 className="font-bold text-gray-800 uppercase tracking-widest text-xs border-b border-gray-100 pb-1 mb-3">Alignment</h3>
-                     <div className="text-sm">
-                         {app.formData?.marmotExplanations && Object.entries(app.formData.marmotExplanations).map(([k,v]) => (
-                             <div key={k} className="mb-2"><span className="font-bold text-purple-700">{k}:</span> {v}</div>
-                         ))}
-                     </div>
-                </section>
-            </div>
+            <ProfileModal isOpen={isProfileOpen} onClose={() => setIsProfileOpen(false)} user={currUser} onSave={setCurrUser} />
         </div>
     );
-
-    if (view === 'home') {
-        return (
-            <div className="max-w-6xl mx-auto py-12 px-4 animate-fade-in relative">
-                <div className="absolute top-0 right-4 mt-4 flex gap-2">
-                    {isAdmin && (
-                        <Button size="sm" variant="outline" onClick={onReturnToAdmin} className="border-red-200 text-red-600 hover:bg-red-50">Exit to Admin</Button>
-                    )}
-                    <button onClick={() => setIsProfileOpen(true)} className="flex items-center gap-2 bg-white px-4 py-2 rounded-full shadow-sm border border-gray-100 hover:bg-purple-50 transition-colors">
-                        {user.photoUrl && <img src={user.photoUrl} className="w-6 h-6 rounded-full object-cover" />}
-                        <span className="text-sm font-bold text-brand-purple">Profile</span>
-                    </button>
-                </div>
-                <div className="text-center mb-8 pt-8">
-                    <h1 className="text-3xl md:text-4xl font-bold font-dynapuff text-brand-purple mb-2">
-                        {isAdmin ? "Admin Scoring Oversight" : "People's Committee Portal"}
-                    </h1>
-                    <p className="max-w-2xl mx-auto text-gray-600">
-                        {isAdmin ? `Viewing as: ${user.displayName} (${user.area})` : `Welcome, ${user.displayName}.`}
-                    </p>
-                </div>
-                {!settings.stage1Visible && !settings.stage2Visible && !isAdmin && (
-                    <div className="bg-amber-50 border-l-4 border-amber-400 p-4 mb-8 rounded-r">
-                        <p className="font-bold text-amber-800">Applications are currently locked.</p>
-                        <p className="text-sm text-amber-700">The administrator has not yet released applications for review.</p>
-                    </div>
-                )}
-                <div className="grid md:grid-cols-3 gap-8 mb-12">
-                    <div onClick={() => setView('score')} className="bg-white p-8 rounded-3xl shadow-xl hover:shadow-2xl hover:-translate-y-2 transition-all cursor-pointer text-center border border-purple-50 group">
-                        <div className="w-20 h-20 bg-purple-100 text-brand-purple rounded-full flex items-center justify-center mx-auto mb-6 group-hover:scale-110">
-                            <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg>
-                        </div>
-                        <h3 className="text-xl font-bold font-dynapuff text-gray-800 mb-2">Scoring Matrix</h3>
-                        <p className="text-gray-500 text-sm">{pendingApps.length} Pending Tasks</p>
-                    </div>
-                    <div onClick={() => setView('viewer')} className="bg-white p-8 rounded-3xl shadow-xl hover:shadow-2xl hover:-translate-y-2 transition-all cursor-pointer text-center border border-teal-50 group">
-                        <div className="w-20 h-20 bg-teal-100 text-brand-teal rounded-full flex items-center justify-center mx-auto mb-6 group-hover:scale-110">
-                             <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M7 21a4 4 0 01-4-4V5a4 4 0 014-4h6a4 4 0 014 4v12a4 4 0 01-4 4H7zM10 12h4"></path></svg>
-                        </div>
-                        <h3 className="text-xl font-bold font-dynapuff text-gray-800 mb-2">App Viewer</h3>
-                        <p className="text-gray-500 text-sm">View All ({apps.length})</p>
-                    </div>
-                    <div onClick={() => setView('docs')} className="bg-white p-8 rounded-3xl shadow-xl hover:shadow-2xl hover:-translate-y-2 transition-all cursor-pointer text-center border border-blue-50 group">
-                         <div className="w-20 h-20 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-6 group-hover:scale-110">
-                             <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path></svg>
-                         </div>
-                         <h3 className="text-xl font-bold font-dynapuff text-gray-800 mb-2">Documents</h3>
-                         <p className="text-gray-500 text-sm">Guidance & Resources</p>
-                    </div>
-                </div>
-                <ProfileModal isOpen={isProfileOpen} onClose={() => setIsProfileOpen(false)} user={user} onSave={onUpdateUser} />
-            </div>
-        );
-    }
-
-    if (view === 'docs') {
-         return (
-            <div className="max-w-5xl mx-auto py-12 px-4 animate-fade-in">
-                <Button variant="ghost" onClick={() => setView('home')} className="mb-6">&larr; Back to Portal</Button>
-                <h2 className="text-3xl font-bold font-dynapuff text-brand-purple mb-8 text-center">Committee Documents</h2>
-                <div className="grid md:grid-cols-2 gap-6">
-                    {COMMITTEE_DOCS.map((doc, i) => (
-                        <a key={i} href={doc.url} target="_blank" rel="noreferrer" className="block bg-white p-6 rounded-xl shadow-lg border border-gray-100 group">
-                            <h3 className="text-lg font-bold font-dynapuff text-gray-800 mb-2 group-hover:text-brand-purple">{doc.title}</h3>
-                            <p className="text-gray-500 text-sm mb-4">{doc.desc}</p>
-                            <span className="inline-flex items-center text-xs font-bold text-brand-purple bg-purple-50 px-3 py-1 rounded-full">Download PDF</span>
-                        </a>
-                    ))}
-                </div>
-            </div>
-        );
-    }
-
-    if (view === 'viewer') {
-        return (
-             <div className="h-[calc(100vh-80px)] flex flex-col md:flex-row animate-fade-in">
-                <div className="md:w-1/3 bg-white border-r border-gray-200 overflow-y-auto flex flex-col">
-                    <div className="p-4 border-b border-gray-100 bg-gray-50">
-                        <Button variant="ghost" size="sm" onClick={() => setView('home')} className="mb-2">&larr; Portal</Button>
-                        <h3 className="font-bold font-dynapuff text-lg text-gray-800">All Applications</h3>
-                    </div>
-                    <div className="flex-1 p-2 space-y-2">
-                        {apps.map(app => (
-                            <div key={app.id} onClick={() => setActiveApp(app)} className={`p-4 rounded-xl cursor-pointer transition-all border ${activeApp?.id === app.id ? 'bg-purple-50 border-purple-200' : 'bg-white border-transparent hover:bg-gray-50'}`}>
-                                <div className="flex justify-between items-start">
-                                    <span className="font-bold text-gray-800 text-sm">{app.applicantName}</span>
-                                    <span className="text-[10px] font-mono text-gray-400">{app.ref}</span>
-                                </div>
-                                <div className="text-xs text-gray-500 mt-1 line-clamp-1">{app.projectTitle}</div>
-                                <div className="mt-2"><Badge>{app.status}</Badge></div>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-                <div className="md:w-2/3 bg-gray-100 flex flex-col overflow-y-auto">
-                    {activeApp ? (
-                        activeApp.submissionMethod === 'digital' ? renderDigitalApp(activeApp) : (
-                            <iframe src={activeApp.stage2PdfUrl || activeApp.pdfUrl} className="w-full h-full border-0" title="PDF" />
-                        )
-                    ) : (
-                        <div className="flex flex-col items-center justify-center h-full text-gray-400"><p>Select an application to view.</p></div>
-                    )}
-                </div>
-            </div>
-        );
-    }
-
-    if (view === 'score') {
-        if (!activeApp) {
-             return (
-                <div className="max-w-6xl mx-auto py-12 px-4 animate-fade-in">
-                    <Button variant="ghost" onClick={() => setView('home')}>&larr; Back</Button>
-                    <div className="flex justify-between items-center mb-6 mt-4">
-                        <h2 className="text-2xl font-bold font-dynapuff text-gray-800">Select Application to Score</h2>
-                        {isAdmin && <Button variant="outline" size="sm" onClick={downloadCSV}>Export My Scores (CSV)</Button>}
-                    </div>
-                    
-                    <div className="bg-white rounded-3xl shadow-xl border border-gray-100 overflow-hidden mb-12">
-                        <div className="bg-gray-50 p-4 font-bold text-gray-700 border-b">Eligible for Scoring (Stage 2)</div>
-                        <table className="w-full text-left">
-                            <thead className="bg-gray-50 border-b border-gray-200">
-                                <tr>
-                                    <th className="p-5 text-gray-500 text-sm uppercase">Ref</th>
-                                    <th className="p-5 text-gray-500 text-sm uppercase">Project</th>
-                                    <th className="p-5 text-gray-500 text-sm uppercase text-right">Action</th>
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y divide-gray-100">
-                                {pendingApps.map(app => (
-                                    <tr key={app.id} className="hover:bg-purple-50 transition-colors">
-                                        <td className="p-5 font-mono text-sm text-gray-400 font-bold">{app.ref}</td>
-                                        <td className="p-5 font-bold text-gray-800">{app.projectTitle}</td>
-                                        <td className="p-5 text-right"><Button size="sm" onClick={() => handleStartScoring(app)}>Score</Button></td>
-                                    </tr>
-                                ))}
-                                {pendingApps.length === 0 && (
-                                    <tr><td colSpan={3} className="p-8 text-center text-gray-400">You have no outstanding scoring tasks!</td></tr>
-                                )}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-             );
-        }
-
-        const totalScore = Math.round(Object.values(scores).reduce((a, b) => a + b, 0));
-        // RAG Logic
-        const scoreColor = totalScore < 50 ? 'bg-red-100 text-red-700' : (totalScore < threshold ? 'bg-amber-100 text-amber-800' : 'bg-green-100 text-green-700');
-
-        return (
-            <div className="h-[calc(100vh-80px)] flex flex-col md:flex-row overflow-hidden bg-gray-50 animate-fade-in fixed inset-0 top-20 z-0">
-                <div className="md:w-7/12 h-full flex flex-col border-r border-gray-200 bg-white overflow-y-auto">
-                    <div className="p-3 border-b flex items-center justify-between bg-white sticky top-0 z-10">
-                        <Button variant="ghost" size="sm" onClick={() => setActiveApp(null)}>&larr; List</Button>
-                        <div className="text-center">
-                            <h2 className="font-bold text-gray-800 text-sm">{activeApp.projectTitle}</h2>
-                            <p className="text-xs text-gray-500">{activeApp.ref}</p>
-                        </div>
-                        <div className="w-16"></div>
-                    </div>
-                    <div className="flex-1 bg-gray-100">
-                        {activeApp.submissionMethod === 'digital' ? renderDigitalApp(activeApp) : (
-                             <iframe src={activeApp.stage2PdfUrl || activeApp.pdfUrl} className="w-full h-full border-0" title="PDF" />
-                        )}
-                    </div>
-                </div>
-                <div className="md:w-5/12 h-full flex flex-col bg-slate-50 shadow-inner relative">
-                    <div className="p-4 border-b bg-white flex justify-between items-center z-10 shadow-sm">
-                        <h2 className="font-bold font-dynapuff text-brand-purple">Scoring Matrix</h2>
-                        <span className={`px-4 py-1.5 rounded-full font-bold text-base border ${scoreColor}`}>{totalScore} / 100</span>
-                    </div>
-                    
-                    {/* Threshold Control */}
-                    <div className="bg-gray-100 px-6 py-3 border-b border-gray-200 flex items-center gap-3">
-                        <span className="text-xs font-bold text-gray-500 uppercase">Approval Threshold: {threshold}</span>
-                        <input type="range" min="40" max="90" value={threshold} onChange={(e) => setThreshold(Number(e.target.value))} className="flex-1 accent-gray-500 h-1" />
-                    </div>
-
-                    <div className="flex-1 overflow-y-auto p-6 space-y-6 scroller">
-                        <div className="flex justify-end mb-4">
-                             <button className="text-xs text-brand-purple font-bold hover:underline" onClick={() => window.open(COMMITTEE_DOCS[2].url, '_blank')}>View Guidance Notes</button>
-                        </div>
-                        {SCORING_CRITERIA.map(c => (
-                            <div key={c.id} className="bg-white p-5 rounded-xl shadow-sm border border-gray-200 hover:border-purple-300 transition-colors relative">
-                                <div className="flex justify-between items-start mb-3">
-                                    <div className="pr-8">
-                                        <div className="flex items-center gap-2">
-                                            <h4 className="font-bold text-gray-800 text-sm">{c.name}</h4>
-                                            <button className="text-gray-400 hover:text-brand-purple focus:outline-none" onClick={() => setActiveTooltip(activeTooltip === c.id ? null : c.id)} aria-label="Show guidance">
-                                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                                            </button>
-                                        </div>
-                                    </div>
-                                    <div className="text-right">
-                                        <div className="w-8 h-8 rounded bg-gray-50 flex items-center justify-center font-bold text-brand-purple border border-gray-200 text-sm">{scores[c.id] || 0}</div>
-                                    </div>
-                                </div>
-                                {activeTooltip === c.id && (
-                                    <div className="bg-slate-800 text-white text-sm p-4 rounded-lg shadow-inner mb-4 animate-fade-in">
-                                        <p className="font-bold text-brand-teal mb-2">Guidance:</p>
-                                        <p className="mb-3 italic text-gray-200">{c.guidance}</p>
-                                        <div className="border-t border-gray-600 pt-2 mt-2">
-                                            <p className="font-bold text-brand-purple mb-1 text-xs uppercase tracking-wider">Scoring Rubric:</p>
-                                            <div className="space-y-1 text-xs text-gray-300" dangerouslySetInnerHTML={{ __html: c.details }} />
-                                        </div>
-                                    </div>
-                                )}
-                                <input type="range" min="0" max="3" step="1" className="w-full accent-brand-purple h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer" value={scores[c.id] || 0} onChange={(e) => setScores({...scores, [c.id]: Number(e.target.value)})} />
-                            </div>
-                        ))}
-                    </div>
-                    <div className="p-4 bg-white border-t border-gray-200 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)]">
-                         <div className="flex gap-3 mb-4">
-                            <Button variant="outline" className="flex-1" onClick={() => handleSaveScore(false)}>Save Draft</Button>
-                            <Button className="flex-1 shadow-lg py-3" onClick={() => handleSaveScore(true)} disabled={isSaving}>Post Final Score</Button>
-                        </div>
-                        <div className="bg-gray-50 rounded-xl p-3 border border-gray-200 max-h-40 overflow-y-auto">
-                            <h4 className="text-xs font-bold text-gray-500 uppercase mb-2">My Pending Tasks ({pendingApps.length})</h4>
-                            <div className="space-y-1">
-                                {pendingApps.map(app => (
-                                    <div key={app.id} onClick={() => app.id !== activeApp?.id && handleStartScoring(app)} className={`text-sm p-2 rounded cursor-pointer flex justify-between ${app.id === activeApp?.id ? 'bg-purple-100 text-purple-700 font-bold' : 'bg-white hover:bg-gray-100'}`}>
-                                        <span className="truncate max-w-[150px]">{app.projectTitle}</span>
-                                        <span className="text-xs text-gray-400">{app.ref}</span>
-                                    </div>
-                                ))}
-                                {pendingApps.length === 0 && <div className="text-xs text-green-600 font-bold">All caught up!</div>}
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        );
-    }
-    return null;
 };
 
-// --- ADMIN DASHBOARD ---
-interface AdminProps {
-    onNavigatePublic: (view: string) => void;
-    onNavigateScoring: () => void;
-}
+export const CommitteeDashboard: React.FC<{ user: User, onUpdateUser: (u:User)=>void, isAdmin?: boolean, onReturnToAdmin?: ()=>void }> = ({ user, onUpdateUser, isAdmin, onReturnToAdmin }) => {
+    const [apps, setApps] = useState<Application[]>([]);
+    const [scores, setScores] = useState<Score[]>([]);
+    const [selectedApp, setSelectedApp] = useState<Application | null>(null);
+    const [isProfileOpen, setIsProfileOpen] = useState(false);
 
-export const AdminDashboard: React.FC<AdminProps> = ({ onNavigatePublic, onNavigateScoring }) => {
-    const [allApps, setAllApps] = useState<Application[]>([]);
-    const [allScores, setAllScores] = useState<Score[]>([]);
-    const [activeTab, setActiveTab] = useState<'overview' | 'tracker' | 'controls' | 'applications'>('overview');
-    const [portalSettings, setPortalSettings] = useState<PortalSettings>({ stage1Visible: true, stage2Visible: false, votingOpen: false });
-    const [selectedCommitteeMember, setSelectedCommitteeMember] = useState<string>('All');
-    const [allUsers, setAllUsers] = useState<User[]>([]);
+    useEffect(() => {
+        const load = async () => {
+             const allApps = await api.getApplications(isAdmin ? 'All' : user.area);
+             // Filter for only those ready for review
+             setApps(allApps.filter(a => ['Submitted-Stage1', 'Invited-Stage2', 'Submitted-Stage2', 'Finalist'].includes(a.status)));
+             
+             const allScores = await api.getScores();
+             setScores(allScores.filter(s => s.scorerId === user.uid));
+        };
+        load();
+    }, [user.area, user.uid, isAdmin]);
 
-    // Application Table State
-    const [appSort, setAppSort] = useState<{key: keyof Application, dir: 'asc'|'desc'}>({key: 'createdAt', dir: 'desc'});
-    const [appFilter, setAppFilter] = useState({ area: 'All', status: 'All', search: '' });
+    const handleSaveScore = async (score: Score) => {
+        await api.saveScore(score);
+        const allScores = await api.getScores();
+        setScores(allScores.filter(s => s.scorerId === user.uid));
+    };
+
+    return (
+        <div className="container mx-auto px-4 py-8 animate-fade-in">
+             <div className="flex justify-between items-center mb-8">
+                <div>
+                    <h1 className="text-3xl font-bold font-dynapuff text-brand-purple flex items-center gap-2">
+                        {isAdmin && <span className="bg-red-100 text-red-600 text-xs px-2 py-1 rounded border border-red-200">ADMIN MODE</span>}
+                        Committee Dashboard
+                    </h1>
+                    <p className="text-gray-600">Review and score applications for {user.area || 'All Areas'}.</p>
+                </div>
+                <div className="flex gap-2">
+                    {isAdmin && <Button variant="ghost" onClick={onReturnToAdmin}>Exit Scoring View</Button>}
+                    <Button variant="outline" onClick={() => setIsProfileOpen(true)}>My Profile</Button>
+                </div>
+            </div>
+            
+            {/* Stats/Docs Row */}
+            <div className="grid md:grid-cols-4 gap-6 mb-8">
+                <Card className="md:col-span-3">
+                     <h3 className="font-bold font-dynapuff text-gray-800 mb-4">Reference Documents</h3>
+                     <div className="grid md:grid-cols-3 gap-4">
+                        {COMMITTEE_DOCS.map((doc, i) => (
+                            <a key={i} href={doc.url} target="_blank" rel="noreferrer" className="block p-4 rounded-xl border border-gray-200 hover:border-brand-purple hover:bg-purple-50 transition-all group">
+                                <div className="font-bold text-brand-purple group-hover:underline truncate">{doc.title}</div>
+                                <div className="text-xs text-gray-500 mt-1 line-clamp-2">{doc.desc}</div>
+                            </a>
+                        ))}
+                     </div>
+                </Card>
+                <Card className="bg-brand-purple text-white flex flex-col justify-center items-center text-center">
+                    <div className="text-4xl font-bold font-dynapuff mb-2">{scores.length} / {apps.length}</div>
+                    <div className="opacity-90 text-sm">Applications Scored</div>
+                </Card>
+            </div>
+
+            <div className="grid md:grid-cols-1 gap-6">
+                {apps.length === 0 ? (
+                    <div className="text-center py-12 text-gray-400 font-bold text-xl">No applications available for review yet.</div>
+                ) : (
+                    apps.map(app => {
+                        const myScore = scores.find(s => s.appId === app.id);
+                        return (
+                            <div key={app.id} className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 hover:shadow-md transition-shadow">
+                                <div className="flex flex-col md:flex-row justify-between md:items-center gap-4 mb-4">
+                                    <div>
+                                        <div className="flex items-center gap-3 mb-1">
+                                            <Badge>{app.ref}</Badge>
+                                            <Badge variant={null}>{app.status}</Badge>
+                                            {myScore && <span className="text-green-600 font-bold text-sm flex items-center gap-1">✓ Scored ({myScore.total}/30)</span>}
+                                        </div>
+                                        <h3 className="text-xl font-bold text-gray-800">{app.projectTitle}</h3>
+                                        <p className="text-brand-purple font-bold">{app.orgName}</p>
+                                    </div>
+                                    <div className="flex gap-2">
+                                        {app.pdfUrl && <a href={app.pdfUrl} target="_blank" rel="noreferrer" className="px-4 py-2 rounded-xl border border-gray-300 text-gray-600 hover:bg-gray-50 font-bold text-sm flex items-center gap-2">View PDF ↗</a>}
+                                        <Button onClick={() => setSelectedApp(app)}>
+                                            {myScore ? 'Update Score' : 'Evaluate Project'}
+                                        </Button>
+                                    </div>
+                                </div>
+                                <div className="bg-gray-50 p-4 rounded-xl text-sm text-gray-700 leading-relaxed border border-gray-100">
+                                    <span className="font-bold block text-gray-500 text-xs uppercase mb-1">Project Summary</span>
+                                    {app.summary}
+                                </div>
+                                <div className="mt-4 flex gap-6 text-sm text-gray-500">
+                                    <div><strong>Cost:</strong> £{app.totalCost}</div>
+                                    <div><strong>Requested:</strong> £{app.amountRequested}</div>
+                                    <div><strong>Priority:</strong> {app.priority || 'Not specified'}</div>
+                                </div>
+                            </div>
+                        );
+                    })
+                )}
+            </div>
+
+            {selectedApp && (
+                <ScoreModal 
+                    isOpen={!!selectedApp} 
+                    onClose={() => setSelectedApp(null)} 
+                    app={selectedApp} 
+                    existingScore={scores.find(s => s.appId === selectedApp.id)}
+                    onSubmit={handleSaveScore}
+                />
+            )}
+            
+            <ProfileModal isOpen={isProfileOpen} onClose={() => setIsProfileOpen(false)} user={user} onSave={onUpdateUser} />
+        </div>
+    );
+};
+
+export const AdminDashboard: React.FC<{ onNavigatePublic: (view:string)=>void, onNavigateScoring: ()=>void }> = ({ onNavigatePublic, onNavigateScoring }) => {
+    const [activeTab, setActiveTab] = useState('overview');
+    const [users, setUsers] = useState<User[]>([]);
+    const [apps, setApps] = useState<Application[]>([]);
+    const [settings, setSettings] = useState<PortalSettings>({ stage1Visible: true, stage2Visible: false, votingOpen: false });
+    
+    // Admin editing states
+    const [editingUser, setEditingUser] = useState<User | null>(null);
+    const [isUserModalOpen, setIsUserModalOpen] = useState(false);
+
+    // Super View States
+    const [previewMode, setPreviewMode] = useState<'stage1' | 'stage2' | null>(null);
 
     const refreshData = async () => {
-        const apps = await api.getApplications('All');
-        const scores = await api.getScores();
-        const settings = await api.getPortalSettings();
-        const users = await api.getUsers();
-        setAllApps(apps);
-        setAllScores(scores);
-        setPortalSettings(settings);
-        setAllUsers(users);
+        setUsers(await api.getUsers());
+        setApps(await api.getApplications());
+        setSettings(await api.getPortalSettings());
     };
 
     useEffect(() => { refreshData(); }, []);
 
     const toggleSetting = async (key: keyof PortalSettings) => {
-        const newSettings = { ...portalSettings, [key]: !portalSettings[key] };
+        const newSettings = { ...settings, [key]: !settings[key] };
         await api.updatePortalSettings(newSettings);
-        setPortalSettings(newSettings);
+        setSettings(newSettings);
     };
 
-    const handleResetScore = async (scorerId: string, appId?: string) => {
-        if (confirm("Are you sure you want to wipe these scores? This cannot be undone.")) {
-            await api.resetUserScores(scorerId, appId);
+    const handleDeleteUser = async (uid: string) => {
+        if (confirm('Are you sure you want to delete this user?')) {
+            await api.deleteUser(uid);
             refreshData();
         }
     };
-
-    const downloadFullCSV = () => {
-        // Generate Admin CSV content with All Apps and Stats
-        const headers = ['Ref', 'Title', 'Area', 'Applicant', 'Status', 'Requested', 'Total Cost', 'Avg Score', 'Num Scores'];
-        const rows = allApps.map(app => {
-            const appScores = allScores.filter(s => s.appId === app.id);
-            const avg = appScores.length > 0 ? (appScores.reduce((a,b) => a + b.total, 0) / appScores.length).toFixed(1) : '0';
-            return [
-                app.ref,
-                `"${app.projectTitle.replace(/"/g, '""')}"`,
-                app.area,
-                `"${app.applicantName}"`,
-                app.status,
-                app.amountRequested,
-                app.totalCost,
-                avg,
-                appScores.length
-            ].join(',');
-        });
-        const csvContent = [headers.join(','), ...rows].join('\n');
-        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.setAttribute('download', 'admin_export.csv');
-        document.body.appendChild(link);
-        link.click();
-   };
     
-    // Sort & Filter Apps
-    const getFilteredApps = () => {
-        let result = [...allApps];
-        if (appFilter.area !== 'All') result = result.filter(a => a.area === appFilter.area);
-        if (appFilter.status !== 'All') result = result.filter(a => a.status === appFilter.status);
-        if (appFilter.search) {
-            const q = appFilter.search.toLowerCase();
-            result = result.filter(a => a.projectTitle.toLowerCase().includes(q) || a.applicantName.toLowerCase().includes(q) || a.ref.toLowerCase().includes(q));
+    const handleResetScores = async (uid: string) => {
+        if (confirm('Reset all scores for this committee member?')) {
+            await api.resetUserScores(uid);
+            alert('Scores wiped.');
         }
-        
-        result.sort((a, b) => {
-            const valA = a[appSort.key];
-            const valB = b[appSort.key];
-            if (valA === valB) return 0;
-            const comp = valA > valB ? 1 : -1;
-            return appSort.dir === 'asc' ? comp : -comp;
-        });
-        return result;
     };
 
-    const handleSort = (key: keyof Application) => {
-        setAppSort({ key, dir: appSort.key === key && appSort.dir === 'asc' ? 'desc' : 'asc' });
+    // Dummy app for preview
+    const dummyApp: Partial<Application> = {
+        applicantName: 'Development Preview',
+        orgName: 'Test Organisation',
+        projectTitle: 'Development Test Project',
+        area: 'Blaenavon',
+        summary: 'This is a test summary for the Super User view to validate form logic.',
+        totalCost: 1500,
+        amountRequested: 1000,
+        formData: {
+            budgetBreakdown: [
+                { item: 'Test Item 1', note: 'Essential equipment', cost: 500 },
+                { item: 'Test Item 2', note: 'Labor costs', cost: 1000 }
+            ],
+            bankAccountName: 'Test Bank Account',
+            bankSortCode: '12-34-56',
+            bankAccountNumber: '12345678',
+            marmotPrinciples: [
+                "Give every child the best start in life",
+                "Create fair employment and good work for all"
+            ],
+            wfgGoals: [
+                "A prosperous Wales",
+                "A resilient Wales"
+            ]
+        }
     };
 
     return (
-        <div className="max-w-7xl mx-auto py-12 px-4">
-             <div className="flex flex-col md:flex-row justify-between items-center mb-10 gap-6">
-                <div>
-                    <h1 className="text-4xl font-bold font-dynapuff text-brand-purple">Admin Control Room</h1>
-                    <div className="flex gap-3 mt-2">
-                        <Button size="sm" variant="outline" onClick={() => onNavigatePublic('home')}>Public Site</Button>
-                        <Button size="sm" variant="secondary" onClick={onNavigateScoring}>Super User View (Scoring)</Button>
-                    </div>
-                </div>
-                <div className="bg-white p-1.5 rounded-xl border shadow-sm flex overflow-x-auto max-w-full">
-                    {['overview', 'applications', 'tracker', 'controls'].map(tab => (
-                        <button key={tab} onClick={() => setActiveTab(tab as any)} className={`px-6 py-2 rounded-lg text-sm font-bold capitalize transition-all ${activeTab === tab ? 'bg-brand-purple text-white shadow-md' : 'text-gray-500 hover:bg-gray-50'}`}>{tab}</button>
-                    ))}
+        <div className="container mx-auto px-4 py-8 animate-fade-in">
+             <div className="flex justify-between items-center mb-8">
+                <h1 className="text-3xl font-bold font-dynapuff text-brand-purple">System Administration</h1>
+                <div className="flex gap-2">
+                    <Button variant="outline" onClick={() => onNavigatePublic('home')}>View Public Site</Button>
+                    <Button onClick={onNavigateScoring}>Enter Scoring Mode</Button>
                 </div>
             </div>
 
-            {activeTab === 'applications' && (
-                <div className="animate-fade-in">
-                    <Card>
-                        <div className="flex justify-between items-center mb-4">
-                            <h3 className="font-bold text-gray-700">Application Management</h3>
-                            <Button size="sm" onClick={downloadFullCSV} className="bg-green-600 hover:bg-green-700 border-green-700">Download CSV Report</Button>
-                        </div>
-                        <div className="flex flex-wrap gap-4 mb-6 p-4 bg-gray-50 rounded-xl border border-gray-100 items-end">
-                            <div className="flex-1 min-w-[200px]">
-                                <Input label="Search" placeholder="Title, Applicant or Ref..." value={appFilter.search} onChange={e => setAppFilter({...appFilter, search: e.target.value})} className="mb-0" />
-                            </div>
-                            <div className="w-48">
-                                <label className="block text-xs font-bold text-gray-500 mb-1">Filter Area</label>
-                                <select className="w-full border rounded-lg px-3 py-3 text-sm" value={appFilter.area} onChange={e => setAppFilter({...appFilter, area: e.target.value})}>
-                                    <option value="All">All Areas</option>
-                                    {AREAS.map(a => <option key={a} value={a}>{a}</option>)}
-                                </select>
-                            </div>
-                            <div className="w-48">
-                                <label className="block text-xs font-bold text-gray-500 mb-1">Filter Status</label>
-                                <select className="w-full border rounded-lg px-3 py-3 text-sm" value={appFilter.status} onChange={e => setAppFilter({...appFilter, status: e.target.value})}>
-                                    <option value="All">All Statuses</option>
-                                    <option value="Submitted-Stage1">Stage 1</option>
-                                    <option value="Submitted-Stage2">Stage 2</option>
-                                    <option value="Invited-Stage2">Invited to Stage 2</option>
-                                    <option value="Draft">Draft</option>
-                                </select>
-                            </div>
-                        </div>
+            <div className="flex gap-4 mb-8 overflow-x-auto pb-2">
+                {['overview', 'users', 'applications', 'settings', 'super-view'].map(tab => (
+                    <button
+                        key={tab}
+                        onClick={() => setActiveTab(tab)}
+                        className={`px-6 py-3 rounded-xl font-bold transition-all whitespace-nowrap ${activeTab === tab ? 'bg-brand-purple text-white shadow-lg' : 'bg-white text-gray-500 hover:bg-gray-50'}`}
+                    >
+                        {tab === 'super-view' ? 'Super View (Dev)' : tab.charAt(0).toUpperCase() + tab.slice(1)}
+                    </button>
+                ))}
+            </div>
 
-                        <div className="overflow-x-auto rounded-lg border border-gray-200">
-                            <table className="w-full text-left text-sm">
-                                <thead className="bg-gray-100 border-b text-gray-600">
-                                    <tr>
-                                        {[
-                                            { key: 'ref', label: 'Reference' },
-                                            { key: 'projectTitle', label: 'Project Title' },
-                                            { key: 'orgName', label: 'Organization' },
-                                            { key: 'area', label: 'Area' },
-                                            { key: 'status', label: 'Status' },
-                                            { key: 'amountRequested', label: 'Amount (£)' },
-                                            { key: 'createdAt', label: 'Date Submitted' },
-                                        ].map(h => (
-                                            <th key={h.key} className="p-4 font-bold cursor-pointer hover:bg-gray-200 transition-colors" onClick={() => handleSort(h.key as any)}>
-                                                <div className="flex items-center gap-1">
-                                                    {h.label}
-                                                    {appSort.key === h.key && (appSort.dir === 'asc' ? ' ↑' : ' ↓')}
-                                                </div>
-                                            </th>
-                                        ))}
-                                        <th className="p-4">Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-gray-100 bg-white">
-                                    {getFilteredApps().map(app => (
-                                        <tr key={app.id} className="hover:bg-purple-50 transition-colors">
-                                            <td className="p-4 font-mono text-xs text-gray-500">{app.ref}</td>
-                                            <td className="p-4 font-bold text-gray-800">{app.projectTitle}</td>
-                                            <td className="p-4">{app.orgName}</td>
-                                            <td className="p-4 text-xs">{app.area}</td>
-                                            <td className="p-4"><Badge>{app.status}</Badge></td>
-                                            <td className="p-4 font-mono">£{app.amountRequested}</td>
-                                            <td className="p-4 text-xs text-gray-500">{new Date(app.createdAt).toLocaleDateString()}</td>
-                                            <td className="p-4">
-                                                <Button size="sm" variant="ghost" onClick={() => {}}>Edit</Button>
-                                            </td>
-                                        </tr>
-                                    ))}
-                                    {getFilteredApps().length === 0 && <tr><td colSpan={8} className="p-8 text-center text-gray-400">No applications match your filters.</td></tr>}
-                                </tbody>
-                            </table>
-                        </div>
+            {/* OVERVIEW TAB */}
+            {activeTab === 'overview' && (
+                <div className="grid md:grid-cols-3 gap-6">
+                    <Card className="bg-gradient-to-br from-purple-500 to-indigo-600 text-white border-none">
+                        <h3 className="text-xl font-bold font-dynapuff opacity-90">Total Users</h3>
+                        <div className="text-5xl font-bold my-4">{users.length}</div>
+                        <div className="text-sm opacity-75">{users.filter(u => u.role === 'committee').length} Committee Members</div>
+                    </Card>
+                    <Card className="bg-gradient-to-br from-teal-400 to-emerald-600 text-white border-none">
+                        <h3 className="text-xl font-bold font-dynapuff opacity-90">Applications</h3>
+                        <div className="text-5xl font-bold my-4">{apps.length}</div>
+                        <div className="text-sm opacity-75">{apps.filter(a => a.status.includes('Submitted')).length} Submitted</div>
+                    </Card>
+                    <Card className="bg-gradient-to-br from-pink-500 to-rose-500 text-white border-none">
+                         <h3 className="text-xl font-bold font-dynapuff opacity-90">Portal Status</h3>
+                         <div className="mt-4 space-y-2">
+                            <div className="flex justify-between items-center">
+                                <span>Stage 1 (EOI):</span>
+                                <span className={`font-bold ${settings.stage1Visible ? 'text-white' : 'text-white/50'}`}>{settings.stage1Visible ? 'Active' : 'Hidden'}</span>
+                            </div>
+                             <div className="flex justify-between items-center">
+                                <span>Stage 2 (Full):</span>
+                                <span className={`font-bold ${settings.stage2Visible ? 'text-white' : 'text-white/50'}`}>{settings.stage2Visible ? 'Active' : 'Hidden'}</span>
+                            </div>
+                         </div>
                     </Card>
                 </div>
             )}
 
-            {activeTab === 'controls' && (
-                <div className="animate-fade-in grid md:grid-cols-2 gap-8">
-                    <Card>
-                        <h3 className="text-xl font-bold font-dynapuff text-brand-purple mb-4">Phase Visibility Controls</h3>
-                        <div className="space-y-4">
-                            <div className="flex justify-between items-center p-4 bg-blue-50 rounded-xl border border-blue-100">
-                                <div><h4 className="font-bold text-gray-800">Stage 1 (EOI) Visibility</h4><p className="text-xs text-gray-600">Allow committees to view Part 1 forms.</p></div>
-                                <button onClick={() => toggleSetting('stage1Visible')} className={`w-12 h-6 rounded-full transition-colors relative ${portalSettings.stage1Visible ? 'bg-green-500' : 'bg-gray-300'}`}><div className={`w-4 h-4 bg-white rounded-full absolute top-1 transition-transform ${portalSettings.stage1Visible ? 'left-7' : 'left-1'}`}></div></button>
-                            </div>
-                            <div className="flex justify-between items-center p-4 bg-purple-50 rounded-xl border border-purple-100">
-                                <div><h4 className="font-bold text-gray-800">Stage 2 (Full App) Visibility</h4><p className="text-xs text-gray-600">Allow committees to view & score Part 2 forms.</p></div>
-                                <button onClick={() => toggleSetting('stage2Visible')} className={`w-12 h-6 rounded-full transition-colors relative ${portalSettings.stage2Visible ? 'bg-green-500' : 'bg-gray-300'}`}><div className={`w-4 h-4 bg-white rounded-full absolute top-1 transition-transform ${portalSettings.stage2Visible ? 'left-7' : 'left-1'}`}></div></button>
-                            </div>
-                        </div>
-                    </Card>
-                    <Card>
-                         <h3 className="text-xl font-bold font-dynapuff text-brand-purple mb-4">Data Management</h3>
-                         <Button variant="danger" className="w-full mb-4" onClick={() => alert("Not implemented in demo")}>Delete All Test Data</Button>
-                    </Card>
-                </div>
-            )}
-
-            {activeTab === 'tracker' && (
-                <div className="animate-fade-in space-y-6">
-                    <Card>
-                        <div className="flex justify-between items-center mb-4">
-                            <h3 className="font-bold text-gray-700">Committee Progress Tracker</h3>
-                            <select className="border rounded-lg px-3 py-2 bg-gray-50" value={selectedCommitteeMember} onChange={e => setSelectedCommitteeMember(e.target.value)}>
-                                <option value="All">All Members</option>
-                                {allUsers.filter(u => u.role === 'committee').map(u => <option key={u.uid} value={u.uid}>{u.displayName} ({u.area})</option>)}
-                            </select>
-                        </div>
-                        <div className="overflow-x-auto">
-                        <table className="w-full text-left text-sm">
-                            <thead className="bg-gray-50 border-b"><tr><th className="p-4">Committee Member</th><th className="p-4">App Ref</th><th className="p-4">Score Status</th><th className="p-4 text-right">Admin Action</th></tr></thead>
-                            <tbody className="divide-y">
-                                {(selectedCommitteeMember === 'All' ? allScores : allScores.filter(s => s.scorerId === selectedCommitteeMember)).map((score, i) => (
-                                    <tr key={i} className="hover:bg-gray-50">
-                                        <td className="p-4 font-bold">{score.scorerName}</td>
-                                        <td className="p-4 font-mono text-gray-500">{allApps.find(a => a.id === score.appId)?.ref || 'Unknown'}</td>
-                                        <td className="p-4"><span className={`px-2 py-1 rounded text-xs font-bold ${score.isFinal ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>{score.isFinal ? 'Completed' : 'Draft'}</span></td>
-                                        <td className="p-4 text-right"><button onClick={() => handleResetScore(score.scorerId, score.appId)} className="text-red-600 hover:underline text-xs font-bold">Reset Score</button></td>
+            {/* USERS TAB */}
+            {activeTab === 'users' && (
+                <Card>
+                    <div className="flex justify-between items-center mb-6">
+                        <h3 className="text-xl font-bold font-dynapuff">User Management</h3>
+                        <Button size="sm" onClick={() => { setEditingUser(null); setIsUserModalOpen(true); }}>+ Create User</Button>
+                    </div>
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-left border-collapse">
+                            <thead>
+                                <tr className="border-b border-gray-200 text-gray-500 text-sm">
+                                    <th className="p-3">Name</th>
+                                    <th className="p-3">Role</th>
+                                    <th className="p-3">Area</th>
+                                    <th className="p-3 text-right">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {users.map(u => (
+                                    <tr key={u.uid} className="border-b border-gray-100 hover:bg-gray-50">
+                                        <td className="p-3">
+                                            <div className="font-bold text-gray-800">{u.displayName}</div>
+                                            <div className="text-xs text-gray-400">{u.email}</div>
+                                        </td>
+                                        <td className="p-3"><Badge variant={u.role === 'admin' ? 'purple' : u.role === 'committee' ? 'teal' : 'gray'}>{u.role}</Badge></td>
+                                        <td className="p-3 text-sm">{u.area || '-'}</td>
+                                        <td className="p-3 text-right flex justify-end gap-2">
+                                            <button onClick={() => { setEditingUser(u); setIsUserModalOpen(true); }} className="text-blue-500 hover:underline text-sm font-bold">Edit</button>
+                                            {u.role === 'committee' && <button onClick={() => handleResetScores(u.uid)} className="text-orange-500 hover:underline text-sm font-bold">Wipe Scores</button>}
+                                            <button onClick={() => handleDeleteUser(u.uid)} className="text-red-500 hover:underline text-sm font-bold">Delete</button>
+                                        </td>
                                     </tr>
                                 ))}
                             </tbody>
                         </table>
+                    </div>
+                    <UserFormModal isOpen={isUserModalOpen} onClose={() => setIsUserModalOpen(false)} user={editingUser} onSave={refreshData} />
+                </Card>
+            )}
+
+            {/* APPLICATIONS TAB */}
+            {activeTab === 'applications' && (
+                <Card>
+                    <h3 className="text-xl font-bold font-dynapuff mb-6">All Applications</h3>
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-left border-collapse">
+                            <thead>
+                                <tr className="border-b border-gray-200 text-gray-500 text-sm">
+                                    <th className="p-3">Ref</th>
+                                    <th className="p-3">Project Title</th>
+                                    <th className="p-3">Organisation</th>
+                                    <th className="p-3">Area</th>
+                                    <th className="p-3">Status</th>
+                                    <th className="p-3 text-right">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {apps.map(a => (
+                                    <tr key={a.id} className="border-b border-gray-100 hover:bg-gray-50">
+                                        <td className="p-3 text-sm font-mono">{a.ref}</td>
+                                        <td className="p-3 font-bold">{a.projectTitle}</td>
+                                        <td className="p-3 text-sm">{a.orgName}</td>
+                                        <td className="p-3 text-sm">{a.area}</td>
+                                        <td className="p-3"><Badge>{a.status}</Badge></td>
+                                        <td className="p-3 text-right">
+                                            <button 
+                                                onClick={async () => {
+                                                    if(confirm('Delete application?')) {
+                                                        await api.deleteApplication(a.id);
+                                                        refreshData();
+                                                    }
+                                                }} 
+                                                className="text-red-500 hover:underline text-sm font-bold"
+                                            >
+                                                Delete
+                                            </button>
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                </Card>
+            )}
+
+            {/* SETTINGS TAB */}
+            {activeTab === 'settings' && (
+                <Card>
+                    <h3 className="text-xl font-bold font-dynapuff mb-6">Global Portal Settings</h3>
+                    <div className="space-y-4">
+                        <div className="flex justify-between items-center p-4 bg-gray-50 rounded-xl border border-gray-200">
+                            <div>
+                                <h4 className="font-bold text-gray-800">Stage 1 Visibility</h4>
+                                <p className="text-sm text-gray-500">Allow committee members to see Stage 1 (EOI) applications.</p>
+                            </div>
+                            <div 
+                                onClick={() => toggleSetting('stage1Visible')}
+                                className={`w-14 h-8 flex items-center rounded-full p-1 cursor-pointer transition-colors ${settings.stage1Visible ? 'bg-brand-purple' : 'bg-gray-300'}`}
+                            >
+                                <div className={`bg-white w-6 h-6 rounded-full shadow-md transform transition-transform ${settings.stage1Visible ? 'translate-x-6' : 'translate-x-0'}`} />
+                            </div>
                         </div>
-                    </Card>
+                        <div className="flex justify-between items-center p-4 bg-gray-50 rounded-xl border border-gray-200">
+                            <div>
+                                <h4 className="font-bold text-gray-800">Stage 2 Visibility</h4>
+                                <p className="text-sm text-gray-500">Allow committee members to see and score Full Applications.</p>
+                            </div>
+                            <div 
+                                onClick={() => toggleSetting('stage2Visible')}
+                                className={`w-14 h-8 flex items-center rounded-full p-1 cursor-pointer transition-colors ${settings.stage2Visible ? 'bg-brand-purple' : 'bg-gray-300'}`}
+                            >
+                                <div className={`bg-white w-6 h-6 rounded-full shadow-md transform transition-transform ${settings.stage2Visible ? 'translate-x-6' : 'translate-x-0'}`} />
+                            </div>
+                        </div>
+                    </div>
+                </Card>
+            )}
+
+            {/* SUPER VIEW TAB (DEV PREVIEW) */}
+            {activeTab === 'super-view' && (
+                <div className="space-y-6 animate-fade-in">
+                    <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4 rounded-r-xl">
+                        <h3 className="font-bold text-yellow-800">Super User Development Mode</h3>
+                        <p className="text-sm text-yellow-700">These tools allow you to preview the application forms exactly as applicants see them, regardless of the current portal settings. Use this to verify logic and layout updates.</p>
+                    </div>
+
+                    <div className="grid md:grid-cols-2 gap-6">
+                        <Card 
+                            onClick={() => setPreviewMode('stage1')}
+                            className="cursor-pointer hover:border-brand-purple hover:ring-2 hover:ring-purple-100 transition-all group"
+                        >
+                            <div className="flex items-center gap-4 mb-4">
+                                <div className="w-12 h-12 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center font-bold text-xl">1</div>
+                                <div>
+                                    <h3 className="text-xl font-bold font-dynapuff text-gray-800 group-hover:text-brand-purple">Preview Stage 1 (EOI)</h3>
+                                    <p className="text-sm text-gray-500">Expression of Interest Form</p>
+                                </div>
+                            </div>
+                            <p className="text-gray-600 text-sm">
+                                Launch the interactive Stage 1 form with dummy data. Checks validation, layout, and mobile responsiveness.
+                            </p>
+                        </Card>
+
+                        <Card 
+                            onClick={() => setPreviewMode('stage2')}
+                            className="cursor-pointer hover:border-brand-teal hover:ring-2 hover:ring-teal-100 transition-all group"
+                        >
+                            <div className="flex items-center gap-4 mb-4">
+                                <div className="w-12 h-12 rounded-full bg-teal-100 text-teal-600 flex items-center justify-center font-bold text-xl">2</div>
+                                <div>
+                                    <h3 className="text-xl font-bold font-dynapuff text-gray-800 group-hover:text-brand-teal">Preview Stage 2 (Full)</h3>
+                                    <p className="text-sm text-gray-500">Full Application Form</p>
+                                </div>
+                            </div>
+                            <p className="text-gray-600 text-sm">
+                                Launch the Stage 2 form including the new <strong>Budget Builder</strong> and <strong>Bank Details</strong> sections.
+                            </p>
+                        </Card>
+                    </div>
                 </div>
             )}
             
-            {activeTab === 'overview' && (
-                <div className="animate-fade-in">
-                    <Card>
-                        <h3 className="font-bold text-gray-700 mb-4">System Overview</h3>
-                        <div className="grid grid-cols-4 gap-4 text-center">
-                            <div className="p-4 bg-purple-50 rounded-xl"><div className="text-3xl font-bold text-brand-purple">{allApps.length}</div><div className="text-xs text-gray-500 uppercase">Total Apps</div></div>
-                            <div className="p-4 bg-teal-50 rounded-xl"><div className="text-3xl font-bold text-brand-teal">{allScores.length}</div><div className="text-xs text-gray-500 uppercase">Total Scores</div></div>
-                            <div className="p-4 bg-blue-50 rounded-xl"><div className="text-3xl font-bold text-blue-600">{allUsers.length}</div><div className="text-xs text-gray-500 uppercase">Users</div></div>
-                        </div>
-                    </Card>
-                </div>
+            {/* PREVIEW MODAL */}
+            {previewMode && (
+                <Modal 
+                    isOpen={!!previewMode} 
+                    onClose={() => setPreviewMode(null)} 
+                    title={`Development Preview: ${previewMode === 'stage1' ? 'Stage 1 EOI' : 'Stage 2 Full App'}`}
+                    size="xl"
+                >
+                    <div className="bg-gray-100 p-4 rounded-xl mb-4 text-center text-sm font-bold text-gray-500 border border-gray-200 border-dashed">
+                        INTERACTIVE PREVIEW MODE — DATA WILL NOT BE SAVED
+                    </div>
+                    {previewMode === 'stage1' ? (
+                        <DigitalStage1Form 
+                            data={dummyApp} 
+                            onChange={() => {}} 
+                            onSubmit={(e) => { e.preventDefault(); alert('Submission Simulated - Form Valid'); }} 
+                            onCancel={() => setPreviewMode(null)} 
+                        />
+                    ) : (
+                        <DigitalStage2Form 
+                            data={dummyApp} 
+                            onChange={() => {}} 
+                            onSubmit={(e) => { e.preventDefault(); alert('Submission Simulated - Form Valid'); }} 
+                            onCancel={() => setPreviewMode(null)} 
+                        />
+                    )}
+                </Modal>
             )}
         </div>
     );

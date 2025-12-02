@@ -54,52 +54,75 @@ export interface Application {
 
   // Digital Mode - Detailed Data
   formData?: {
-    // Stage 1 (EOI)
-    multiArea?: boolean;
-    orgType?: string;
-    orgTypeOther?: string;
-    contactPosition?: string;
-    contactEmail?: string;
-    contactPhone?: string;
+    // --- Stage 1 (EOI) ---
+    applyMultiArea?: boolean; // "Do you intend to apply for funding in more than one area?"
+    
+    // Address
     addressStreet?: string;
+    addressLocalArea?: string;
     addressTown?: string;
     addressCounty?: string;
     addressPostcode?: string;
     
+    // Organisation Type
+    orgType?: string;
+    orgTypeOther?: string;
+    
+    contactPosition?: string;
+    contactEmail?: string;
+    contactPhone?: string;
+
+    // Priorities & Timeline
+    projectTheme?: string;
     startDate?: string;
     endDate?: string;
     duration?: string;
     
-    positiveOutcomes?: string[]; // [1, 2, 3]
-    otherFundingSource?: string;
+    // Outcomes
+    positiveOutcomes?: string[]; // [Outcome 1, Outcome 2, Outcome 3]
+    
+    // Funding
+    otherFundingSources?: string;
     crossAreaBreakdown?: string;
     
+    // Alignment
     marmotPrinciples?: string[]; // List of selected IDs
     wfgGoals?: string[]; // List of selected IDs
     
+    // Declaration
     declarationName?: string;
     declarationDate?: string;
+    declarationSigned?: boolean;
 
-    // Stage 2 (Full App) additions
+    // --- Stage 2 (Full App) additions ---
+    
+    // Bank & Reg
     bankAccountName?: string;
     bankAccountNumber?: string;
     bankSortCode?: string;
     charityNumber?: string;
     companyNumber?: string;
     
-    activities?: string;
-    communityBenefit?: string;
-    collaborations?: string;
-    risks?: string;
+    // Project Detail
+    projectOverview?: string; // SMART Objectives (Sec 2.2)
+    activities?: string; // Sec 2.3
+    communityBenefit?: string; // Sec 2.4
+    collaborations?: string; // Sec 2.5
+    risks?: string; // Sec 2.6
     
-    marmotExplanations?: Record<string, string>; // ID -> Text
-    wfgExplanations?: Record<string, string>; // ID -> Text
+    // Alignment Explanations (Justify the ticks from Part 1)
+    marmotExplanations?: Record<string, string>; // Principle Name -> Justification Text
+    wfgExplanations?: Record<string, string>; // Goal Name -> Justification Text
     
+    // Budget
     budgetBreakdown?: BudgetLine[];
     additionalBudgetInfo?: string;
     
+    // Checklists & Declarations
     checklist?: string[]; // Attachments included
     declarationStatements?: string[]; // Ticked declaration boxes
+    declarationName2?: string;
+    declarationDate2?: string;
   }
 }
 
