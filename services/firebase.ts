@@ -5,7 +5,7 @@ import { DEMO_USERS, DEMO_APPS, SCORING_CRITERIA } from '../constants';
 // --- CONFIGURATION ---
 // 1. SET THIS TO FALSE to use Real Firebase
 // 2. PASTE YOUR KEYS below in firebaseConfig
-export const USE_DEMO_MODE = true; 
+export const USE_DEMO_MODE = false; 
 
 // --- REAL FIREBASE IMPORTS ---
 import { initializeApp } from "firebase/app";
@@ -23,7 +23,7 @@ const firebaseConfig = {
 };
 
 // Initialize Firebase (Conditional)
-const app = !USE_DEMO_MODE = false initializeApp(firebaseConfig) : null;
+const app = !USE_DEMO_MODE ? initializeApp(firebaseConfig) : null;
 export const auth = app ? getAuth(app) : null;
 export const db = app ? getFirestore(app) : null;
 
@@ -411,4 +411,5 @@ class AuthService {
 }
 
 export const api = new AuthService();
+
 
